@@ -3,8 +3,8 @@
 # MilkFrog Memory Skill
 
 ![Antigravity IDE](https://img.shields.io/badge/Antigravity_IDE-Supported-1B1B1B?style=flat-square&labelColor=1B1B1B&color=E8503A)
-![Python](https://img.shields.io/badge/Python_3.9+-Stdlib_Only-1B1B1B?style=flat-square&labelColor=1B1B1B&color=E8503A)
-![Dependencies](https://img.shields.io/badge/External_Deps-Zero-1B1B1B?style=flat-square&labelColor=1B1B1B&color=E8503A)
+![Python](https://img.shields.io/badge/Python_3.9%2B-Stdlib_Only-1B1B1B?style=flat-square&labelColor=1B1B1B&color=E8503A)
+![Dependencies](https://img.shields.io/badge/Dependencies-Zero-1B1B1B?style=flat-square&labelColor=1B1B1B&color=E8503A)
 ![License](https://img.shields.io/badge/License-MIT-1B1B1B?style=flat-square&labelColor=1B1B1B&color=E8503A)
 
 **A skill that teaches your AI agent to install, migrate, and verify a local dual-layer Markdown memory system (`GEMINI.md` + optional `AGENTS.md` cache).**
@@ -49,18 +49,11 @@ Both modes enforce Antigravity's native `24,000`-byte per-file cap by default (`
 
 ---
 
-## Architecture Flow
+## System Architecture
 
-```mermaid
-flowchart LR
-    Chat["New IDE Session"] --> Rules["Load ~/.gemini/GEMINI.md + <ws>/GEMINI.md"]
-    Rules --> Work["Task Execution"]
-    Work --> Curate["Post-Task: Merge/Update memories/*.md + Index"]
-    Curate --> Lint["python3 memsync.py lint"]
-    Curate --> Sync["Optional: sync-plan -> apply"]
-    Sync --> Snap["Update <ws>/AGENTS.md -> global AGENTS.md"]
-    Snap --> Export["Optional: copy-global -> Codex / Claude"]
-```
+![MilkFrog Dual-Layer Memory Architecture](./assets/architecture.png)
+
+> Editable Draw.io source: [architecture.drawio](./assets/architecture.drawio) · [Chinese diagram](./assets/architecture.zh-CN.png) · Full rationale in [Architecture & Rationale](./references/architecture.md)
 
 ---
 
@@ -97,6 +90,11 @@ milkfrog-memory-skill/
 │   ├── en/                       # Global GEMINI.md (full / index-only) & RUNBOOK.md
 │   ├── zh/                       # Chinese counterparts
 │   └── shared/                   # Entry frontmatter template & Antigravity sidecar template
+├── assets/
+│   ├── architecture.drawio       # Editable system architecture diagram (Draw.io)
+│   ├── architecture.png          # Rendered English architecture diagram
+│   ├── architecture.zh-CN.drawio # Editable Chinese diagram (Draw.io)
+│   └── architecture.zh-CN.png    # Rendered Chinese diagram
 ├── references/
 │   ├── architecture.md           # Design rationale & trade-offs (+ .zh-CN.md)
 │   ├── schema-and-config.md      # config.json flags & CLI spec (+ .zh-CN.md)

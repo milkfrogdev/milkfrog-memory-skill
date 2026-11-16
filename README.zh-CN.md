@@ -2,9 +2,9 @@
 
 # MilkFrog 双层记忆系统 Skill
 
-![Antigravity IDE](https://img.shields.io/badge/Antigravity_IDE-已适配-1B1B1B?style=flat-square&labelColor=1B1B1B&color=E8503A)
-![Python](https://img.shields.io/badge/Python_3.9+-纯标准库-1B1B1B?style=flat-square&labelColor=1B1B1B&color=E8503A)
-![Dependencies](https://img.shields.io/badge/第三方依赖-零依赖-1B1B1B?style=flat-square&labelColor=1B1B1B&color=E8503A)
+![Antigravity IDE](https://img.shields.io/badge/Antigravity_IDE-Supported-1B1B1B?style=flat-square&labelColor=1B1B1B&color=E8503A)
+![Python](https://img.shields.io/badge/Python_3.9%2B-Stdlib_Only-1B1B1B?style=flat-square&labelColor=1B1B1B&color=E8503A)
+![Dependencies](https://img.shields.io/badge/Dependencies-Zero-1B1B1B?style=flat-square&labelColor=1B1B1B&color=E8503A)
 ![License](https://img.shields.io/badge/License-MIT-1B1B1B?style=flat-square&labelColor=1B1B1B&color=E8503A)
 
 **一个让 AI 自己动手把双层本地记忆系统（`GEMINI.md` 索引正文 + 可选 `AGENTS.md` 热缓存）装进你电脑的开源 Skill。**
@@ -49,18 +49,11 @@
 
 ---
 
-## 运转流程
+## 系统架构图
 
-```mermaid
-flowchart LR
-    Open["打开 Antigravity 新对话"] --> Inject["自动注入 GEMINI.md 索引与快照"]
-    Inject --> Work["执行编码任务"]
-    Work --> Write["任务结束：查重合并入 memories/*.md + 更新索引"]
-    Write --> Lint["python memsync.py lint 自检"]
-    Write --> Plan["可选：sync-plan -> apply"]
-    Plan --> Snap["先工作区后全局更新 AGENTS.md"]
-    Snap --> Sync["可选：copy-global 同步 Codex / Claude"]
-```
+![MilkFrog 双层记忆系统架构](./assets/architecture.zh-CN.png)
+
+> 可编辑源文件：[architecture.zh-CN.drawio](./assets/architecture.zh-CN.drawio) · [英文版架构图](./assets/architecture.png) · 详细设计取舍见 [架构设计文档](./references/architecture.zh-CN.md)
 
 ---
 
@@ -97,6 +90,11 @@ milkfrog-memory-skill/
 │   ├── zh/                       # 中文全局模板（双层版 / 纯索引版）与 RUNBOOK
 │   ├── en/                       # 英文对应模板
 │   └── shared/                   # 条目 frontmatter 模板与定时 sidecar 模板
+├── assets/
+│   ├── architecture.zh-CN.drawio # 中文系统架构图源文件（Draw.io）
+│   ├── architecture.zh-CN.png    # 中文系统架构图导出成图
+│   ├── architecture.drawio       # 英文系统架构图源文件（Draw.io）
+│   └── architecture.png          # 英文系统架构图导出成图
 ├── references/
 │   ├── architecture.zh-CN.md     # 架构设计、淘汰 LFU 的原因与取舍（含英文版）
 │   ├── schema-and-config.zh-CN.md# 状态位、frontmatter 与 CLI 手册（含英文版）
@@ -119,4 +117,4 @@ python -m unittest discover -s tests -p "test_*.py"
 
 ## 开源协议与作者
 
-MIT License — **MilkFrog (`milkfrogdev`)** · 小红书：**程序员奶蛙**
+[MIT License](./LICENSE) — **MilkFrog (`milkfrogdev`)** · 小红书：**程序员奶蛙**

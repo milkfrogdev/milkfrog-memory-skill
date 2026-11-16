@@ -3,6 +3,10 @@
 > **适用宿主**：Google Antigravity IDE（附可选单向分发至 Codex / Claude Code）。  
 > **暂不支持**：Antigravity CLI（`agy`）尚未做过适配与实测。
 
+![MilkFrog 双层记忆系统架构](../assets/architecture.zh-CN.png)
+
+> 可编辑 Draw.io 源文件：[architecture.zh-CN.drawio](../assets/architecture.zh-CN.drawio) · [英文版](./architecture.md)
+
 ## 1. 解决哪两类具体问题
 
 开发时 AI 跨会话会丢两类完全不同的信息：

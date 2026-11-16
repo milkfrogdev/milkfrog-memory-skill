@@ -3,6 +3,10 @@
 > **Target Host**: Google Antigravity IDE (with optional one-way export to Codex / Claude Code).  
 > **Not Supported Yet**: Antigravity CLI (`agy`) has not been tested or adapted by this skill.
 
+![MilkFrog Dual-Layer Memory Architecture](../assets/architecture.png)
+
+> Editable Draw.io source: [architecture.drawio](../assets/architecture.drawio) · [中文版](./architecture.zh-CN.md)
+
 ## 1. Core Problems Solved
 
 Coding agents lose two different kinds of knowledge across sessions:
