@@ -1,0 +1,21 @@
+{
+  "builtin": "schedule",
+  "restart_policy": "always",
+  "args": [
+    "CRON_TZ={{TIMEZONE}} {{CRON_MIN}} {{CRON_HOUR}} * * *",
+    "agentapi",
+    "new-conversation",
+    "--",
+    "Read {{OPS_DIR}}/RUNBOOK.md and run the incremental AGENTS.md sync strictly step-by-step: 1) run {{PYTHON_CMD}} \"{{OPS_DIR}}/memsync.py\" lint and read the generated lint report; 2) run {{PYTHON_CMD}} \"{{OPS_DIR}}/memsync.py\" sync-plan and read work/sync-plan-<today>.md (exit cleanly with SKIP report if nothing changed or index-only mode is active); 3) Stage 1: for each workspace marked NEEDS_UPDATE, read work/sync-ws-<ws>-<today>.md, write draft to work/draft-ws-<ws>-<today>.md matching the required sections, and run memsync.py apply --scope <ws>; 4) Stage 2: if [global] is NEEDS_UPDATE, run memsync.py global-input, read work/sync-global-<today>.md, write draft-global-<today>.md, and run memsync.py apply --scope global; 5) output only the concise summary format defined in RUNBOOK.md. Never edit GEMINI.md, memories/*.md, config.json, sync-state.json, or AGENTS.md directly."
+  ],
+  "description": "Daily {{SCHEDULE_TIME}} ({{TIMEZONE}}) incremental distillation from changed memories into workspace and global AGENTS.md snapshot caches.",
+  "display_name": "Daily Memory Snapshot Sync",
+  "agent_permissions": {
+    "workspace_uris": [],
+    "access_grants": [
+      "command({{PYTHON_CMD}})",
+      "read_file({{MEMORY_HOME}})",
+      "write_file({{OPS_DIR}})"
+    ]
+  }
+}
