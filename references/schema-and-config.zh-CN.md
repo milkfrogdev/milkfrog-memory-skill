@@ -16,6 +16,9 @@
 | `limits.custom` | `object`（可选） | 省略 | 按需覆盖 `global`、`project`、`rules_total_warn`、`rules_total_hard` 字节数。 |
 | `cross_tool_sync.enabled` | `bool` | `false` | 是否在更新全局 `AGENTS.md` 后顺带复制到其他 Agent 配置。 |
 | `cross_tool_sync.targets` | `{name: path}` | `{}` | 外部目标映射，如 `{"codex": "~/.codex/AGENTS.md", "claude": "~/.claude/CLAUDE.md"}`。 |
+| `context_hook.enabled` | `bool` | `false` | 控制 `context_hook.py` 是否注入上下文占用（配合 `milkfrog-context-hook` 插件）。 |
+| `context_hook.mode` | `"always" \| "threshold"` | `"always"` | `"always"`：每次推理都注精简占用、达线加抢救提醒；`"threshold"`：仅达 `warn_percent` 以上注入。 |
+| `context_hook.warn_percent` | `number` | `80` | 触发记忆抢救提醒的百分比阈值（`1–99`）。 |
 | `workspaces[]` | `array` | `[]` | 每项 `{name, path, summary, enabled, manage_agents?}`；单仓库设 `manage_agents: false` 可永久保留他人原版 `AGENTS.md`。 |
 | `ignored[]` | `array` | `[]` | 忽略目录列表 `{path, reason, added}`，跳过新工作区初始化提示。 |
 
@@ -49,9 +52,12 @@ metadata:
 支持通过环境变量 `MILKFROG_MEMORY_HOME` 覆盖默认 `~/.gemini` 路径（用于沙箱隔离测试或自定义目录）。
 
 - `doctor [--json]`：只读检查 Python 版本、OS、时区、已有 `GEMINI.md`/`AGENTS.md`、`memories/local-installed-tools.md`、外部工具目录、`PATH` 上常见开发命令（`detected_toolchains`）与 Antigravity 项目列表，不改动任何文件。
-- `bootstrap [--lang zh|en] [--agents-cache on|off] [--schedule on|off] [--schedule-time HH:MM] [--timezone TZ] [--profile standard|extended] [--auto-discover on|off] [--target name=path] [--no-global-files] [--force-global]`：幂等建好 `memory-ops/` 目录与 `config.json`。
+- `bootstrap [--lang zh|en] [--agents-cache on|off] [--schedule on|off] [--schedule-time HH:MM] [--timezone TZ] [--profile standard|extended] [--auto-discover on|off] [--context-hook on|off] [--hook-mode always|threshold] [--hook-warn N] [--target name=path] [--no-global-files] [--force-global]`：幂等建好 `memory-ops/` 目录与 `config.json`（传入 `--context-hook on` 会顺带安装 `milkfrog-context-hook` 插件）。
 - `config show`：查看当前归一化后的 `config.json`。
-- `config set [--lang zh|en] [--agents-cache on|off] [--schedule on|off] [--auto-discover on|off] [--profile standard|extended] [--cross-sync on|off] [--add-target name=path] [--remove-target name]`：随时调整模式开关与阈值档位。
+- `config set [--lang zh|en] [--agents-cache on|off] [--schedule on|off] [--auto-discover on|off] [--profile standard|extended] [--context-hook on|off] [--hook-mode always|threshold] [--hook-warn N] [--cross-sync on|off] [--add-target name=path] [--remove-target name]`：随时调整模式开关、Hook 策略与阈值档位。
+- `hook install [--script PATH] [--python CMD] [--mode always|threshold] [--warn-percent N]`：复制 `context_hook.py` 到 `memory-ops/` 并自动写入 `~/.gemini/config/plugins/milkfrog-context-hook/`（`plugin.json` + `hooks.json`）。
+- `hook status`：查看 Hook 配置与插件安装状态。
+- `hook uninstall`：备份 `hooks.json` 后移除 `milkfrog-context-hook` 并把 `context_hook.enabled` 置 `false`。
 - `lint`：检查各启用作用域结构、链接、frontmatter、疑似明文密钥、字节阈值、`.gitignore` 与未初始化工作区，输出报告到 `work/lint-YYYY-MM-DD.md`。
 - `sync-plan`：做阶段 1（工作区）+ 阶段 2（全局）sha256 diff 检测，跳过无变化作用域，生成 `work/sync-plan-YYYY-MM-DD.md` 和 `sync-ws-<id>-YYYY-MM-DD.md`。
 - `global-input`：把阶段 1 更新后的工作区快照与全局 diff 打包为 `work/sync-global-YYYY-MM-DD.md`。

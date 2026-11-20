@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -11,6 +13,7 @@ from pathlib import Path
 
 SKILL_ROOT = Path(__file__).resolve().parent.parent
 MEMSYNC_SCRIPT = SKILL_ROOT / "scripts" / "memsync.py"
+CONTEXT_HOOK_SCRIPT = SKILL_ROOT / "scripts" / "context_hook.py"
 EXAMPLES_DIR = SKILL_ROOT / "examples" / "milkfrog-demo"
 TEMPLATES_DIR = SKILL_ROOT / "templates"
 
@@ -28,6 +31,33 @@ def run_memsync(mem_home: Path, *args: str, cwd: Path | None = None) -> subproce
         encoding="utf-8",
         check=False,
     )
+
+
+def _pb_varint(val: int) -> bytes:
+    out = bytearray()
+    while True:
+        b = val & 0x7F
+        val >>= 7
+        if val:
+            out.append(b | 0x80)
+        else:
+            out.append(b)
+            return bytes(out)
+
+
+def _pb_bytes(field_no: int, payload: bytes) -> bytes:
+    return _pb_varint((field_no << 3) | 2) + _pb_varint(len(payload)) + payload
+
+
+def _pb_int(field_no: int, val: int) -> bytes:
+    return _pb_varint(field_no << 3) + _pb_varint(val)
+
+
+def make_gen_blob(uncached: int, cached: int, max_ctx: int, window_used: int = 0) -> bytes:
+    usage = _pb_bytes(4, _pb_int(2, uncached) + _pb_int(5, cached))
+    window_body = _pb_int(4, max_ctx) + (_pb_int(1, window_used) if window_used else b"")
+    window_wrap = _pb_bytes(9, _pb_bytes(10, window_body))
+    return _pb_bytes(1, usage + window_wrap)
 
 
 class TestMilkFrogMemorySkill(unittest.TestCase):
@@ -425,6 +455,96 @@ class TestMilkFrogMemorySkill(unittest.TestCase):
             # Also check no 'uv run' left inside operational scripts/templates
             if path.suffix in (".py", ".json") or "templates" in path.parts or "SKILL" in path.name:
                 self.assertNotIn("uv run", txt, f"Found 'uv run' dependency in {path}")
+
+    def test_context_hook_install_modes_and_pb_parsing(self) -> None:
+        # Install via bootstrap --context-hook on
+        boot = run_memsync(
+            self.mem_home,
+            "bootstrap",
+            "--lang", "zh",
+            "--agents-cache", "off",
+            "--context-hook", "on",
+            "--hook-mode", "always",
+            "--hook-warn", "80",
+        )
+        self.assertEqual(boot.returncode, 0, boot.stdout + boot.stderr)
+        self.assertIn("context_hook=installed", boot.stdout)
+
+        installed_script = self.ops / "context_hook.py"
+        plugin_dir = self.mem_home / "config" / "plugins" / "milkfrog-context-hook"
+        self.assertTrue(installed_script.is_file())
+        self.assertTrue((plugin_dir / "plugin.json").is_file())
+        hooks_data = json.loads((plugin_dir / "hooks.json").read_text(encoding="utf-8"))
+        cmd = hooks_data["milkfrog-context-monitor"]["PreInvocation"][0]["command"]
+        if platform.system() == "Windows":
+            self.assertTrue(cmd.startswith("call "))
+        self.assertIn(str(installed_script.resolve()), cmd)
+
+        # doctor reports context_hook_installed=True
+        doc = json.loads(run_memsync(self.mem_home, "doctor", "--json").stdout)
+        self.assertTrue(doc["context_hook_installed"])
+        self.assertTrue(doc["context_hook_script_exists"])
+
+        # Prepare synthetic conversation SQLite DB (10% occupancy) + transcript fallback
+        cid = "conv-test-01"
+        db_dir = self.mem_home / "antigravity" / "conversations"
+        db_dir.mkdir(parents=True)
+        db_path = db_dir / f"{cid}.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)")
+        conn.execute("INSERT INTO gen_metadata VALUES (0, ?)", (make_gen_blob(3400, 70000, 734000),))
+        conn.commit()
+        conn.close()
+
+        def call_hook(stdin_obj: dict[str, object]) -> dict[str, object]:
+            env = os.environ.copy()
+            env["MILKFROG_MEMORY_HOME"] = str(self.mem_home)
+            res = subprocess.run(
+                [sys.executable, str(installed_script)],
+                input=json.dumps(stdin_obj).encode("utf-8"),
+                env=env,
+                capture_output=True,
+                check=True,
+            )
+            return json.loads(res.stdout.decode("utf-8"))
+
+        # always mode below 80% injects compact usage line
+        low_out = call_hook({"conversationId": cid, "lastUserInput": "中文输入测试"})
+        msg_low = low_out["injectSteps"][0]["systemMessage"]["systemMessage"]
+        self.assertIn("[上下文]", msg_low)
+        self.assertIn("73.4K / 734.0K (10.0%)", msg_low)
+
+        # threshold mode below 80% stays silent
+        run_memsync(self.mem_home, "config", "set", "--hook-mode", "threshold", "--hook-warn", "80")
+        self.assertEqual(call_hook({"conversationId": cid}), {})
+
+        # bump DB above 80% -> threshold mode triggers Chinese rescue alert
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO gen_metadata VALUES (1, ?)", (make_gen_blob(5000, 595000, 734000),))
+        conn.commit()
+        conn.close()
+        high_out = call_hook({"conversationId": cid})
+        msg_high = high_out["injectSteps"][0]["systemMessage"]["systemMessage"]
+        self.assertIn("上下文预警", msg_high)
+        self.assertIn("81.7%", msg_high)
+
+        # switch language to English + verify transcript fallback when DB missing
+        run_memsync(self.mem_home, "config", "set", "--lang", "en", "--hook-mode", "always")
+        tpath = self.mem_home / "antigravity" / "brain" / "other-cid" / ".system_generated" / "logs" / "transcript.jsonl"
+        tpath.parent.mkdir(parents=True)
+        tpath.write_text(
+            json.dumps({"type": "PLANNER_RESPONSE", "input_tokens": 1200, "cache_read_tokens": 3800}) + "\n",
+            encoding="utf-8",
+        )
+        fb_out = call_hook({"conversationId": "other-cid", "transcriptPath": str(tpath)})
+        self.assertIn("[Context] 5.0K / ? (?%)", fb_out["injectSteps"][0]["systemMessage"]["systemMessage"])
+
+        # uninstall cleans plugin dir and disables flag
+        un = run_memsync(self.mem_home, "hook", "uninstall")
+        self.assertEqual(un.returncode, 0, un.stdout)
+        self.assertFalse(plugin_dir.exists())
+        cfg_after = json.loads((self.ops / "config.json").read_text(encoding="utf-8"))
+        self.assertFalse(cfg_after["context_hook"]["enabled"])
 
 
 if __name__ == "__main__":

@@ -20,10 +20,10 @@ Vector RAG or raw transcript search handles history lookup, not guaranteed rule 
 | Layer | Files | Purpose | Sole Writer |
 | --- | --- | --- | --- |
 | **Global Index & Rules** | `~/.gemini/GEMINI.md` | Runtime read/write protocol, workspace registry, and index links | Current session agent (or `memsync ws/init` on registry section) |
-| **Global Entries** | `~/.gemini/memories/*.md` | Single source of truth for cross-project `user`, `feedback`, `project`, `reference` | Current session agent after task completion |
+| **Global Entries** | `~/.gemini/memories/*.md` | Single source of truth for cross-project `user`, `feedback`, `project`, `reference` | Current session agent (bans/pitfalls/alerts immediately; others post-task) |
 | **Global Hot Snapshot** | `~/.gemini/AGENTS.md` | Compact 4-section digest cached from global entries and Stage-1 workspace snapshots | `memsync.py apply --scope global` only |
 | **Workspace Index** | `<workspace>/GEMINI.md` | Minimal header pointing to global rules + project index links | `memsync.py init` + current session agent |
-| **Workspace Entries** | `<workspace>/.gemini/memories/*.md` | Single source of truth for repo-specific `project`, `feedback`, `reference` (gitignored) | Current session agent after task completion |
+| **Workspace Entries** | `<workspace>/.gemini/memories/*.md` | Single source of truth for repo-specific `project`, `feedback`, `reference` (gitignored) | Current session agent (bans/pitfalls/alerts immediately; others post-task) |
 | **Workspace Hot Snapshot** | `<workspace>/AGENTS.md` | Compact 2-section digest of repo progress and repo-only gotchas | `memsync.py apply --scope <ws>` only |
 
 ### Optional Mode: Index-Only (`mode.agents_cache_enabled = false`)
@@ -58,6 +58,9 @@ Antigravity records scheduled cron runs and swarm sub-workspaces under `~/.gemin
 - `sync-state.json` never caches body text for `sync: never` files, and `sync-plan` emits redacted metadata only.
 - `apply` runs `SECRET_RE` pattern checks and refuses to write if potential credentials leak into a draft.
 - `init` automatically adds `.gemini/memories/` to `.gitignore` inside git repositories.
+
+### Optional `PreInvocation` Context Monitor Hook
+Wait-until-task-end memory rules fail if auto-compaction hits mid-task after a user states a new ban or constraint. Installing the optional `milkfrog-context-hook` plugin (`memsync.py hook install`) wires a pure-stdlib `PreInvocation` hook (`context_hook.py`) that reads the active Antigravity conversation SQLite snapshot (with `transcript.jsonl` fallback) and injects compact context occupancy plus a rescue alert at `>= 80%`.
 
 ### One-Way Cross-Tool Distribution
 Multi-tool bi-directional reconciliation causes constant merge drift. `memsync.py copy-global` treats `~/.gemini/AGENTS.md` as the single upstream source, backing up and overwriting configured targets such as `~/.codex/AGENTS.md` or `~/.claude/CLAUDE.md` only when global `apply` runs (or manually via `copy-global`).

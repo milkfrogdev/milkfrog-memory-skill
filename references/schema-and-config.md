@@ -16,6 +16,9 @@ If an older `~/.gemini/memory-ops/workspaces.json` exists and `config.json` does
 | `limits.custom` | `object` (optional) | omitted | Partial overrides for `global`, `project`, `rules_total_warn`, `rules_total_hard`. |
 | `cross_tool_sync.enabled` | `bool` | `false` | Enables copying global `AGENTS.md` to external agent directories on `apply --scope global`. |
 | `cross_tool_sync.targets` | `{name: path}` | `{}` | Map of external targets, e.g. `{"codex": "~/.codex/AGENTS.md", "claude": "~/.claude/CLAUDE.md"}`. |
+| `context_hook.enabled` | `bool` | `false` | Controls whether `context_hook.py` injects live context usage (`milkfrog-context-hook` plugin). |
+| `context_hook.mode` | `"always" \| "threshold"` | `"always"` | `"always"`: inject compact usage before every invocation + alert at threshold; `"threshold"`: silent below `warn_percent`. |
+| `context_hook.warn_percent` | `number` | `80` | Context occupancy percentage threshold (`1–99`) that triggers the pre-compaction memory rescue alert. |
 | `workspaces[]` | `array` | `[]` | Each entry: `{name, path, summary, enabled, manage_agents?}`. Setting `manage_agents: false` keeps an existing foreign `AGENTS.md` untouched in that single repo. |
 | `ignored[]` | `array` | `[]` | Throwaway paths suppressed from new-workspace discovery: `{path, reason, added}`. |
 
@@ -52,9 +55,12 @@ Environment override for isolated testing or non-default paths:
 
 Subcommands:
 - `doctor [--json]`: Read-only inspection of Python, OS, timezone, existing `GEMINI.md`/`AGENTS.md`, `memories/local-installed-tools.md`, external tools (`~/.codex`, `~/.claude`), common CLI toolchains on `PATH` (`detected_toolchains`), and Antigravity projects.
-- `bootstrap [--lang zh|en] [--agents-cache on|off] [--schedule on|off] [--schedule-time HH:MM] [--timezone TZ] [--profile standard|extended] [--auto-discover on|off] [--target name=path] [--no-global-files] [--force-global]`: Idempotently sets up `memory-ops/` and writes `config.json`.
+- `bootstrap [--lang zh|en] [--agents-cache on|off] [--schedule on|off] [--schedule-time HH:MM] [--timezone TZ] [--profile standard|extended] [--auto-discover on|off] [--context-hook on|off] [--hook-mode always|threshold] [--hook-warn N] [--target name=path] [--no-global-files] [--force-global]`: Idempotently sets up `memory-ops/` and writes `config.json` (plus installs `milkfrog-context-hook` when `--context-hook on`).
 - `config show`: Prints normalized `config.json`.
-- `config set [--lang zh|en] [--agents-cache on|off] [--schedule on|off] [--auto-discover on|off] [--profile standard|extended] [--cross-sync on|off] [--add-target name=path] [--remove-target name]`: Updates state flags without editing files manually.
+- `config set [--lang zh|en] [--agents-cache on|off] [--schedule on|off] [--auto-discover on|off] [--profile standard|extended] [--context-hook on|off] [--hook-mode always|threshold] [--hook-warn N] [--cross-sync on|off] [--add-target name=path] [--remove-target name]`: Updates state flags without editing files manually.
+- `hook install [--script PATH] [--python CMD] [--mode always|threshold] [--warn-percent N]`: Stages `context_hook.py` into `memory-ops/` and creates `~/.gemini/config/plugins/milkfrog-context-hook/` (`plugin.json` + `hooks.json`).
+- `hook status`: Reports `context_hook` config flags and plugin install status.
+- `hook uninstall`: Backs up `hooks.json`, removes `milkfrog-context-hook`, and sets `context_hook.enabled = false`.
 - `lint`: Audits all enabled scopes, links, frontmatter, secrets, budgets, `.gitignore`, and unregistered folders; writes `work/lint-YYYY-MM-DD.md`.
 - `sync-plan`: Detects SHA256 diffs across enabled workspaces and global memories; writes `work/sync-plan-YYYY-MM-DD.md` and per-workspace `sync-ws-<id>-YYYY-MM-DD.md`.
 - `global-input`: Packages Stage-1 workspace snapshots + global diffs into `work/sync-global-YYYY-MM-DD.md`.

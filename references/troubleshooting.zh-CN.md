@@ -34,9 +34,21 @@ Antigravity 定时自动化在无人值守会话里运行，没放行在 `access
 2. 到 Antigravity **Automations** 面板手动启用定时任务。
 3. 建议先在对话里试跑一次完整同步，确认 `command(...)`、`read_file(...)`、`write_file(...)` 与工作区 URI 权限全部精准匹配当前环境。
 
-## 6. 彻底卸载与回滚
+## 6. 切换或卸载上下文监控 Hook
+
+- 不动 `hooks.json`，一条命令把 Hook 在“全程注精简水位（`always`）”和“仅 ≥80% 才提醒（`threshold`）”之间切换：
+  ```bash
+  python ~/.gemini/memory-ops/memsync.py config set --hook-mode threshold --hook-warn 80
+  ```
+- 想临时关闭可在 Antigravity 插件设置页开关 `milkfrog-context-hook`，彻底移除可执行：
+  ```bash
+  python ~/.gemini/memory-ops/memsync.py hook uninstall
+  ```
+
+## 7. 彻底卸载与回滚
 
 `memsync.py` 每次覆盖原有 `GEMINI.md`、`AGENTS.md` 或跨端目标文件前，都会在 `~/.gemini/memory-ops/backup/` 留带时间戳备份。如需撤回：
 1. 在 Antigravity Automations 面板关闭并删掉 `~/.gemini/config/sidecars/daily-agents-memory-sync/`。
-2. 需要的话从 `~/.gemini/memory-ops/backup/` 找回迁入前的原版 `GEMINI.md` / `AGENTS.md`。
-3. 删除 `~/.gemini/memory-ops/`（纯正文笔记在 `~/.gemini/memories/`，可按需保留）。
+2. 如装过上下文 Hook，先运行 `memsync.py hook uninstall`。
+3. 需要的话从 `~/.gemini/memory-ops/backup/` 找回迁入前的原版 `GEMINI.md` / `AGENTS.md`。
+4. 删除 `~/.gemini/memory-ops/`（纯正文笔记在 `~/.gemini/memories/`，可按需保留）。

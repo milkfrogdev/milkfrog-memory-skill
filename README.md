@@ -28,7 +28,7 @@ Vector RAG or raw transcript search answers *"what did we discuss two weeks ago?
 
 This skill installs a plain-Markdown, zero-API-call memory architecture split into two layers:
 
-1. **Source of Truth (`GEMINI.md` + `memories/*.md`)**: Curated post-task notes categorized into `user`, `feedback`, `project`, and `reference`, separated cleanly into global vs per-workspace scopes.
+1. **Source of Truth (`GEMINI.md` + `memories/*.md`)**: Two-stage curation — durable user bans, corrections, and verified pitfalls are saved immediately in the same turn, while general findings are evaluated post-task across `user`, `feedback`, `project`, and `reference` scopes. Optional **`milkfrog-context-hook`** (`PreInvocation`) injects live context usage and a `>=80%` rescue reminder so long tasks save unwritten rules before compaction.
 2. **Optional Hot Cache (`AGENTS.md` + `memsync.py`)**: A pure-stdlib Python utility hashes files in `sync-state.json`, computes incremental diffs (`[NEW]` / `[MODIFIED]` / `[DELETED]`), skips unchanged scopes, guards against secret leaks, and keeps `AGENTS.md` snapshots synced (either on demand or via an optional Antigravity daily cron sidecar).
 
 Once setup finishes, **daily memory operations live inside `~/.gemini/GEMINI.md` itself** — you can disable or delete this skill and the system keeps working.
@@ -73,8 +73,8 @@ Both modes enforce Antigravity's native `24,000`-byte per-file cap by default (`
 
 3. Your agent will:
    - Run `memsync.py doctor --json` (read-only) to inspect Python, OS, timezone, existing `GEMINI.md` / `AGENTS.md`, and external tools.
-   - Ask which mode (`Dual-Layer` vs `Index-Only`), schedule preference, budget profile (`24 KB standard` vs `extended`), and migration strategy for any existing rules (Translate/Migrate with a Keep/Drop review table [Recommended], Preserve unmanaged, or Ignore).
-   - Copy `memsync.py` and offline `DESIGN.md` to `~/.gemini/memory-ops/`, configure `config.json`, write self-contained `~/.gemini/GEMINI.md`, optionally create the `sidecar.json` automation definition (without force-enabling it), and verify `lint` passes with `errors=0`.
+   - Ask which mode (`Dual-Layer` vs `Index-Only`), schedule preference, optional `PreInvocation` context monitor hook, budget profile (`24 KB standard` vs `extended`), and migration strategy for any existing rules (Translate/Migrate with a Keep/Drop review table [Recommended], Preserve unmanaged, or Ignore).
+   - Copy `memsync.py` (plus optional `context_hook.py`) and offline `DESIGN.md` to `~/.gemini/memory-ops/`, configure `config.json`, write self-contained `~/.gemini/GEMINI.md`, automatically register `~/.gemini/config/plugins/milkfrog-context-hook/` if enabled, optionally create the `sidecar.json` automation definition (without force-enabling it), and verify `lint` passes with `errors=0`.
 
 ---
 
@@ -85,7 +85,8 @@ milkfrog-memory-skill/
 ├── SKILL.md                      # Agent installation & migration runbook (English)
 ├── SKILL.zh-CN.md                # Agent installation & migration runbook (Chinese)
 ├── scripts/
-│   └── memsync.py                # Stdlib-only Python >=3.9 operations CLI
+│   ├── memsync.py                # Stdlib-only Python >=3.9 operations CLI
+│   └── context_hook.py           # PreInvocation hook for live context usage & >=80% alerts
 ├── templates/
 │   ├── en/                       # Global GEMINI.md (full / index-only) & RUNBOOK.md
 │   ├── zh/                       # Chinese counterparts

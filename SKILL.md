@@ -28,6 +28,7 @@ Set up a local, privacy-preserving Markdown memory system on the user's machine 
 | Global Memories | `~/.gemini/memories/*.md` | Single source of truth for global `user/feedback/project/reference` |
 | Sync Runbook *(if cache on)* | `~/.gemini/memory-ops/RUNBOOK.md` | Instructions for on-demand or scheduled `AGENTS.md` updates |
 | Global Snapshot *(if cache on)* | `~/.gemini/AGENTS.md` | Initial distilled cache (`>=1` apply pass if content exists) |
+| Context Hook *(if hook on)* | `~/.gemini/memory-ops/context_hook.py` & `~/.gemini/config/plugins/milkfrog-context-hook/` | Optional `PreInvocation` hook injecting context occupancy & >=80% rescue alerts |
 | Cron Sidecar *(if schedule on)* | `~/.gemini/config/sidecars/daily-agents-memory-sync/sidecar.json` | Optional Antigravity IDE automation definition (never force-enabled) |
 
 **Done When**: `python3 ~/.gemini/memory-ops/memsync.py lint` (using the verified Python executable) exits with `errors=0`, existing files are preserved or migrated with backups, and runtime instructions live in `~/.gemini/GEMINI.md`.
@@ -82,7 +83,11 @@ Skip questions that do not apply (for example, do not ask about external sync if
    - `Skip for now (create it later when installing software or fixing OS gotchas)`
 7. **Optional Seed Examples** *(for fresh empty installs)*:
    - Ask whether to keep the vault clean or inspect `examples/milkfrog-demo/` first.
-8. **Cross-Tool Export** *(only if Dual-Layer + `doctor` detected `~/.codex` or `~/.claude`)*:
+8. **Context Monitor Hook** *(optional `PreInvocation` hook to warn before compaction erases unwritten rules)*:
+   - `(Recommended) Always inject compact status + rescue alert at >=80%` (`mode="always"`, `warn_percent=80`)
+   - `Alert only at >=80% (stay silent below 80%)` (`mode="threshold"`, `warn_percent=80`)
+   - `Skip context hook`
+9. **Cross-Tool Export** *(only if Dual-Layer + `doctor` detected `~/.codex` or `~/.claude`)*:
    - Ask which detected tools should receive automatic one-way `AGENTS.md` copies after global updates.
 
 ### Step 3 · Handle Existing File Migration First (If Chosen)
@@ -96,9 +101,9 @@ If migrating existing global or workspace `GEMINI.md` / `AGENTS.md`:
 
 ### Step 4 · Install Files, Bootstrap State & Apply
 
-1. Copy `./scripts/memsync.py` to `~/.gemini/memory-ops/memsync.py`.
+1. Copy `./scripts/memsync.py` to `~/.gemini/memory-ops/memsync.py` (and `./scripts/context_hook.py` to `~/.gemini/memory-ops/context_hook.py` if enabling the context hook).
 2. Copy the matching language `references/architecture*.md` to `~/.gemini/memory-ops/DESIGN.md` so secondary customization works without this skill.
-3. Run `bootstrap` (use `--no-global-files` if writing from a full template right after):
+3. Run `bootstrap` (use `--no-global-files` if writing from a full template right after; pass `--context-hook on --hook-mode <always|threshold> --hook-warn 80` if enabling the hook):
    ```bash
    <PYTHON_CMD> ~/.gemini/memory-ops/memsync.py bootstrap \
      --lang <zh|en> \
@@ -107,9 +112,11 @@ If migrating existing global or workspace `GEMINI.md` / `AGENTS.md`:
      --schedule-time <HH:MM> \
      --timezone <IANA_TZ> \
      --profile <standard|extended> \
+     --context-hook <on|off> \
+     --hook-mode <always|threshold> \
      --no-global-files
    ```
-   Pass `--target name=path` for any opted-in external tools.
+   Pass `--target name=path` for any opted-in external tools. When `--context-hook on` runs (or later via `<PYTHON_CMD> ~/.gemini/memory-ops/memsync.py hook install`), `memsync.py` automatically registers the `~/.gemini/config/plugins/milkfrog-context-hook/` `PreInvocation` plugin (`plugin.json` + `hooks.json` using the verified Python executable).
 4. Render global `~/.gemini/GEMINI.md`:
    - Back up any existing `~/.gemini/GEMINI.md` to `~/.gemini/memory-ops/backup/` before writing.
    - Use `templates/<lang>/global-gemini.full.md` (Dual-Layer) or `templates/<lang>/global-gemini.index-only.md` (Index-Only), substituting `{{MEMORY_HOME}}`, `{{OPS_DIR}}`, `{{PYTHON_CMD}}`, `{{BUDGET_PROFILE}}`.
@@ -157,5 +164,6 @@ If migrating existing global or workspace `GEMINI.md` / `AGENTS.md`:
 2. If `agents_cache_enabled=true`, verify `sync-plan` reports `0` unexpected drift right after initial setup.
 3. Report to the user:
    - Exact files created/modified + backup paths (if migrated)
-   - Active flags (`agents_cache_enabled`, `schedule_enabled`, `limits.profile`, `lang`)
+   - Active flags (`agents_cache_enabled`, `schedule_enabled`, `limits.profile`, `context_hook`, `lang`)
+   - If the context hook was installed, note that `[milkfrog-context-hook](customization://milkfrog-context-hook)` is active from the next user turn and can be toggled live in Customizations UI or uninstalled anytime with `memsync.py hook uninstall`.
    - Note clearly: daily operation is now handled by `~/.gemini/GEMINI.md`, so this skill can safely be disabled or removed until needed for customization or future upgrades.

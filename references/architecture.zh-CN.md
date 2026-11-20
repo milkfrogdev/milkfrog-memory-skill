@@ -20,10 +20,10 @@
 | 载体 | 路径 | 职责 | 唯一写入方 |
 | --- | --- | --- | --- |
 | **全局索引与规程** | `~/.gemini/GEMINI.md` | 读写规程、工作区清单、全局记忆单行索引 | 日常会话结束时的当前 Agent（工作区清单由 `memsync init/ws` 维护） |
-| **全局正文** | `~/.gemini/memories/*.md` | 跨工作区 `user` / `feedback` / `project` / `reference` 唯一真相源 | 任务结束时由当前 Agent 查重合并写入 |
+| **全局正文** | `~/.gemini/memories/*.md` | 跨工作区 `user` / `feedback` / `project` / `reference` 唯一真相源 | 当前会话 Agent（禁用项/纠偏/实测坑与 >=80% 预警当场写入，其余收尾裁决） |
 | **全局热缓存快照** | `~/.gemini/AGENTS.md` | 由全局正文与阶段 1 工作区摘要蒸馏出的 4 板块压缩视图 | 仅限 `memsync.py apply --scope global` |
 | **项目索引** | `<workspace>/GEMINI.md` | 极简头部指针 + 本项目单行索引 | `memsync.py init` + 当前会话 Agent |
-| **项目正文** | `<workspace>/.gemini/memories/*.md` | 单项目独有进展与坑位正文（git 仓自动忽略） | 任务结束时由当前 Agent 查重合并写入 |
+| **项目正文** | `<workspace>/.gemini/memories/*.md` | 单项目独有进展与坑位正文（git 仓自动忽略） | 当前会话 Agent（禁用项/纠偏/实测坑与 >=80% 预警当场写入，其余收尾裁决） |
 | **项目热缓存快照** | `<workspace>/AGENTS.md` | 仅包含本项目进展与专属坑位的 2 板块摘要 | 仅限 `memsync.py apply --scope <ws>` |
 
 ### 可选关闭缓存：纯索引模式（`mode.agents_cache_enabled = false`）
@@ -58,6 +58,9 @@ Antigravity 的后台定时任务和 Swarm 多 Agent 看板会在 `~/.gemini/con
 - `sync-state.json` 对 `sync: never` 条目不缓存正文内容，`sync-plan` 只输出脱敏描述。
 - `apply` 阶段会做 `SECRET_RE` 正则拦截，疑似密钥明文直接拒写。
 - `init` 在 `.git` 仓库内自动把 `.gemini/memories/` 追加进 `.gitignore`。
+
+### 可选 `PreInvocation` 上下文占用监控 Hook
+如果长任务还没结束就触发了压缩，只在任务结束才写记忆的规则容易漏掉中途刚定下的禁用项和踩坑。通过 `memsync.py hook install` 自动挂载的 `milkfrog-context-hook` 插件会在每次模型调用前执行纯标准库脚本 `context_hook.py`，只读当前会话 SQLite 快照（失败回退 `transcript.jsonl`），把实时上下文占用及 **≥80%** 记忆抢救提醒直接注进对话。
 
 ### 单向跨端同步（不做双向对账）
 多端双向同步极易互相覆盖冲突。本方案把全局 `AGENTS.md` 视为唯一上游，仅在阶段 2 `apply --scope global` 成功后（或手跑 `copy-global`），自动备份旧文件并单向覆盖配置好的外部目标（如 `~/.codex/AGENTS.md`、`~/.claude/CLAUDE.md`）。

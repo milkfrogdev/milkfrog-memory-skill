@@ -34,9 +34,21 @@ Antigravity runs scheduled sidecars unattended and denies non-whitelisted comman
 2. Enable **Daily Memory Snapshot Sync** inside the Antigravity **Automations** dashboard.
 3. Run a test turn once interactively to verify `command(...)`, `read_file(...)`, and `write_file(...)` grants match the exact commands your platform needs.
 
-## 6. Clean Uninstall / Rollback
+## 6. Switching or Uninstalling the Context Monitor Hook
+
+- Switch between always-on compact status and alert-only mode (`>= 80%`) without editing `hooks.json`:
+  ```bash
+  python3 ~/.gemini/memory-ops/memsync.py config set --hook-mode threshold --hook-warn 80
+  ```
+- Temporarily toggle the plugin in Antigravity Customizations UI (`milkfrog-context-hook`) or remove it completely:
+  ```bash
+  python3 ~/.gemini/memory-ops/memsync.py hook uninstall
+  ```
+
+## 7. Clean Uninstall / Rollback
 
 Every overwrite performed by `memsync.py` (including pre-migration `GEMINI.md` / `AGENTS.md` and `copy-global`) stores timestamped backups under `~/.gemini/memory-ops/backup/`. To revert cleanly:
 1. Disable/remove `daily-agents-memory-sync` in Antigravity Automations and delete `~/.gemini/config/sidecars/daily-agents-memory-sync/`.
-2. Restore your previous `GEMINI.md` / `AGENTS.md` files from `~/.gemini/memory-ops/backup/` if applicable.
-3. Remove `~/.gemini/memory-ops/` (leave `~/.gemini/memories/` if you want to keep your curated Markdown notes).
+2. If you installed the context hook, run `memsync.py hook uninstall`.
+3. Restore your previous `GEMINI.md` / `AGENTS.md` files from `~/.gemini/memory-ops/backup/` if applicable.
+4. Remove `~/.gemini/memory-ops/` (leave `~/.gemini/memories/` if you want to keep your curated Markdown notes).

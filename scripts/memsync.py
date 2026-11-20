@@ -11,6 +11,7 @@ Usage:
   python3 memsync.py apply --scope <id> <draft.md> [--dry-run] [--no-copy]
   python3 memsync.py init <path> [--summary "..."] [--name <slug>] [--no-manage-agents]
   python3 memsync.py ws list | add | ignore | unignore | enable | disable | manage-agents
+  python3 memsync.py hook install | status | uninstall
   python3 memsync.py copy-global [--targets a,b] [--dry-run]
 """
 from __future__ import annotations
@@ -48,6 +49,9 @@ STATUS_FILE = OPS / "status.json"
 AGY_CONFIG = MEMORY_HOME / "config" / "config.json"
 AGY_PROJECTS_DIR = MEMORY_HOME / "config" / "projects"
 AGY_SIDECARS_DIR = MEMORY_HOME / "config" / "sidecars"
+AGY_PLUGINS_DIR = MEMORY_HOME / "config" / "plugins"
+CONTEXT_HOOK_PLUGIN_ID = "milkfrog-context-hook"
+CONTEXT_HOOK_PLUGIN_DIR = AGY_PLUGINS_DIR / CONTEXT_HOOK_PLUGIN_ID
 
 GLOBAL_ROOT = MEMORY_HOME
 GLOBAL_GEMINI = GLOBAL_ROOT / "GEMINI.md"
@@ -251,6 +255,11 @@ def default_config() -> dict[str, Any]:
             "auto_copy_on_global_apply": True,
             "targets": {},
         },
+        "context_hook": {
+            "enabled": False,
+            "mode": "always",
+            "warn_percent": 80,
+        },
         "workspaces": [],
         "ignored": [],
     }
@@ -307,6 +316,14 @@ def _normalize_config(raw: dict[str, Any]) -> dict[str, Any]:
             cfg["cross_tool_sync"]["enabled"] = True
         if "auto_copy_on_global_apply" in raw:
             cfg["cross_tool_sync"]["auto_copy_on_global_apply"] = bool(raw["auto_copy_on_global_apply"])
+
+    raw_hook = raw.get("context_hook") if isinstance(raw.get("context_hook"), dict) else {}
+    if "enabled" in raw_hook:
+        cfg["context_hook"]["enabled"] = bool(raw_hook["enabled"])
+    if raw_hook.get("mode") in ("always", "threshold"):
+        cfg["context_hook"]["mode"] = raw_hook["mode"]
+    if isinstance(raw_hook.get("warn_percent"), (int, float)):
+        cfg["context_hook"]["warn_percent"] = _clamp_warn_percent(raw_hook["warn_percent"])
 
     if isinstance(raw.get("workspaces"), list):
         cfg["workspaces"] = list(raw["workspaces"])
@@ -614,6 +631,8 @@ def cmd_doctor(args) -> int:
         "detected_toolchains": detect_common_toolchains(),
         "discovered_agy_workspaces": [raw for _, raw in discover_agy_folder_workspaces()],
         "schedule_sidecar_exists": (AGY_SIDECARS_DIR / cfg["schedule"]["sidecar_id"] / "sidecar.json").exists(),
+        "context_hook_installed": (CONTEXT_HOOK_PLUGIN_DIR / "hooks.json").exists(),
+        "context_hook_script_exists": (OPS / "context_hook.py").exists(),
         "active_mode": cfg["mode"],
         "active_limits_profile": cfg["limits"]["profile"],
     }
@@ -1233,7 +1252,7 @@ def render_global_gemini_minimal(cfg: dict[str, Any]) -> str:
             f"- **Budgets**: Recommended <= {lim['gemini_warn'] // 1000}KB (header <= {lim['head_warn'] // 1000}KB), hard cap {lim['gemini_hard'] // 1000}KB/{lim['head_hard'] // 1000}KB.\n\n"
             f"## Rules\n"
             f"1. Read index first and load only needed memory files.\n"
-            f"2. Write/update durable memories after finishing meaningful tasks or sub-tasks (including reusable pitfalls/workarounds discovered by the agent; skip duplicates already captured in a global Skill); merge into existing topic files and update `updated`.\n"
+            f"2. Write (two-stage): persist durable user-stated bans, corrections, permanent rules, and reusable agent-discovered pitfalls/workarounds immediately in the same turn/sub-step (unless already in a global Skill), and flush unwritten items at >=80% context alert or before compaction; curate remaining durable insights post-task, merging into existing topic files and updating `updated`.\n"
             f"3. Never store plain-text secrets; mark pointer files with `sync: never`.\n"
             f"4. Keep index entries formatted as `- [YYYY-MM-DD type·tag][Title](memories/<slug>.md) - concise summary`.\n\n"
             f"## Registered Workspaces\n\n"
@@ -1252,7 +1271,7 @@ def render_global_gemini_minimal(cfg: dict[str, Any]) -> str:
         f"- **体积阈值**：建议 <= {lim['gemini_warn'] // 1000}KB（头部 <= {lim['head_warn'] // 1000}KB），硬阻断 {lim['gemini_hard'] // 1000}KB/{lim['head_hard'] // 1000}KB。\n\n"
         f"## 读写规程\n"
         f"1. 读：按需克制，先看索引再精准读取相关正文。\n"
-        f"2. 写：在任务或子工作结束后沉淀长期复用价值的信息（含 Agent 自测踩出且尚未写进全局 Skill 的高复用坑/绕行方案，无需等用户纠偏）；同主题先查重合并并更新 `updated`。\n"
+        f"2. 写（双时机）：用户明确的禁用项/纠偏/长期约束与 Agent 自测实锤的高复用坑/绕行方案当轮即刻写入（已写全局 Skill 不双写），达 80% 预警或压缩前先抢救未落盘条目；其余经验收尾裁决写入，同主题查重合并并更新 `updated`。\n"
         f"3. 安全：严禁写入密钥明文，敏感指针文件标记 `sync: never`；git 仓必须忽略 `.gemini/memories/`。\n"
         f"4. 索引格式：`- 【YYYY-MM-DD 类型·定性】[标题](memories/<slug>.md) — 一句话结论`。\n\n"
         f"## 已注册工作区\n\n"
@@ -1432,6 +1451,12 @@ def cmd_bootstrap(args) -> int:
         cfg["schedule"]["timezone"] = args.timezone
     if args.profile:
         cfg["limits"]["profile"] = args.profile
+    if getattr(args, "context_hook", None):
+        cfg["context_hook"]["enabled"] = (args.context_hook == "on")
+    if getattr(args, "hook_mode", None):
+        cfg["context_hook"]["mode"] = args.hook_mode
+    if getattr(args, "hook_warn", None) is not None:
+        cfg["context_hook"]["warn_percent"] = _clamp_warn_percent(args.hook_warn)
     if args.target:
         targets = cfg.setdefault("cross_tool_sync", {}).setdefault("targets", {})
         for spec in args.target:
@@ -1466,7 +1491,15 @@ def cmd_bootstrap(args) -> int:
         else:
             a_stat = "disabled(index-only)"
 
-    print(f"bootstrap: config={CONFIG_FILE} lang={cfg['lang']} profile={cfg['limits']['profile']} global_gemini={g_stat} global_agents={a_stat}")
+    hook_stat = "disabled"
+    if cfg.get("context_hook", {}).get("enabled"):
+        ok_hook, hook_msg = install_context_hook(cfg)
+        if not ok_hook:
+            print(f"bootstrap error: {hook_msg}")
+            return 2
+        hook_stat = "installed"
+
+    print(f"bootstrap: config={CONFIG_FILE} lang={cfg['lang']} profile={cfg['limits']['profile']} global_gemini={g_stat} global_agents={a_stat} context_hook={hook_stat}")
     return 0
 
 
@@ -1491,6 +1524,12 @@ def cmd_config(args) -> int:
             cfg["mode"]["auto_discover_unregistered"] = (args.auto_discover == "on")
         if args.profile:
             cfg["limits"]["profile"] = args.profile
+        if args.context_hook:
+            cfg["context_hook"]["enabled"] = (args.context_hook == "on")
+        if args.hook_mode:
+            cfg["context_hook"]["mode"] = args.hook_mode
+        if args.hook_warn is not None:
+            cfg["context_hook"]["warn_percent"] = _clamp_warn_percent(args.hook_warn)
         if args.cross_sync:
             cfg["cross_tool_sync"]["enabled"] = (args.cross_sync == "on")
         if args.add_target:
@@ -1613,6 +1652,145 @@ def cmd_ws(args) -> int:
     return 2
 
 
+def _clamp_warn_percent(val: float | int) -> int | float:
+    wp = max(1.0, min(99.0, float(val)))
+    return int(wp) if wp.is_integer() else wp
+
+
+def _resolve_hook_script(script_src: str | None = None) -> Path | None:
+    if script_src:
+        cand = Path(script_src).expanduser().resolve()
+        return cand if cand.is_file() else None
+    for cand in (Path(__file__).resolve().parent / "context_hook.py", OPS / "context_hook.py"):
+        if cand.is_file():
+            return cand.resolve()
+    return None
+
+
+def _resolve_python_exe(py_cmd: str | None = None) -> str:
+    if not py_cmd:
+        return sys.executable
+    cand = Path(py_cmd).expanduser()
+    if cand.is_file():
+        return str(cand.resolve())
+    found = shutil.which(py_cmd)
+    return found or py_cmd
+
+
+def _format_hook_command(py_exe: str, script_path: Path) -> str:
+    if platform.system() == "Windows":
+        return f'call "{py_exe}" "{script_path}"'
+    return f'"{py_exe}" "{script_path}"'
+
+
+def install_context_hook(
+    cfg: dict[str, Any],
+    *,
+    py_cmd: str | None = None,
+    script_src: str | None = None,
+    mode: str | None = None,
+    warn_percent: float | int | None = None,
+) -> tuple[bool, str]:
+    src = _resolve_hook_script(script_src)
+    if src is None:
+        return False, "context_hook.py not found next to memsync.py or in memory-ops"
+
+    OPS.mkdir(parents=True, exist_ok=True)
+    dst_script = (OPS / "context_hook.py").resolve()
+    new_code = src.read_text(encoding="utf-8")
+    if dst_script != src:
+        if dst_script.exists() and read_text(dst_script) != new_code:
+            backup_file(dst_script, "prehook-script")
+        write_utf8_nobom(dst_script, new_code)
+
+    py_exe = _resolve_python_exe(py_cmd)
+    cmd_str = _format_hook_command(py_exe, dst_script)
+    plugin_meta = {
+        "name": CONTEXT_HOOK_PLUGIN_ID,
+        "displayName": "MilkFrog Context Monitor",
+        "version": "0.1.0",
+        "description": "PreInvocation hook that injects live context token occupancy and high-water memory rescue reminders.",
+    }
+    hooks_cfg = {
+        "milkfrog-context-monitor": {
+            "PreInvocation": [
+                {
+                    "type": "command",
+                    "command": cmd_str,
+                    "timeout": 5,
+                }
+            ]
+        }
+    }
+
+    CONTEXT_HOOK_PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
+    plugin_json_path = CONTEXT_HOOK_PLUGIN_DIR / "plugin.json"
+    hooks_json_path = CONTEXT_HOOK_PLUGIN_DIR / "hooks.json"
+    plugin_txt = json.dumps(plugin_meta, ensure_ascii=False, indent=2) + "\n"
+    hooks_txt = json.dumps(hooks_cfg, ensure_ascii=False, indent=2) + "\n"
+    if plugin_json_path.exists() and read_text(plugin_json_path) != plugin_txt:
+        backup_file(plugin_json_path, "prehook-plugin")
+    if hooks_json_path.exists() and read_text(hooks_json_path) != hooks_txt:
+        backup_file(hooks_json_path, "prehook-hooks")
+    write_utf8_nobom(plugin_json_path, plugin_txt)
+    write_utf8_nobom(hooks_json_path, hooks_txt)
+
+    hook_cfg = cfg.setdefault("context_hook", {})
+    hook_cfg["enabled"] = True
+    if mode in ("always", "threshold"):
+        hook_cfg["mode"] = mode
+    if warn_percent is not None:
+        hook_cfg["warn_percent"] = _clamp_warn_percent(warn_percent)
+    save_config(cfg)
+    log("hook-install", f"plugin={CONTEXT_HOOK_PLUGIN_DIR} mode={hook_cfg.get('mode')} warn={hook_cfg.get('warn_percent')}")
+    return True, f"plugin={CONTEXT_HOOK_PLUGIN_DIR} script={dst_script}"
+
+
+def uninstall_context_hook(cfg: dict[str, Any]) -> str:
+    hooks_json = CONTEXT_HOOK_PLUGIN_DIR / "hooks.json"
+    if hooks_json.exists():
+        backup_file(hooks_json, "uninstall-hooks")
+    if CONTEXT_HOOK_PLUGIN_DIR.exists():
+        shutil.rmtree(CONTEXT_HOOK_PLUGIN_DIR)
+    cfg.setdefault("context_hook", {})["enabled"] = False
+    save_config(cfg)
+    log("hook-uninstall", f"removed={CONTEXT_HOOK_PLUGIN_DIR}")
+    return f"removed={CONTEXT_HOOK_PLUGIN_DIR}"
+
+
+def cmd_hook(args) -> int:
+    cfg = load_config()
+    if args.hook_cmd == "install":
+        ok, msg = install_context_hook(
+            cfg,
+            py_cmd=args.python,
+            script_src=args.script,
+            mode=args.mode,
+            warn_percent=args.warn_percent,
+        )
+        if not ok:
+            print(f"hook install error: {msg}")
+            return 2
+        h = cfg["context_hook"]
+        print(f"hook installed: {msg} mode={h['mode']} warn_percent={h['warn_percent']}")
+        return 0
+    if args.hook_cmd == "status":
+        h = cfg.get("context_hook", {})
+        installed = (CONTEXT_HOOK_PLUGIN_DIR / "hooks.json").exists()
+        script_ok = (OPS / "context_hook.py").exists()
+        print(
+            f"context_hook enabled={h.get('enabled', False)} installed={installed} "
+            f"script={script_ok} mode={h.get('mode', 'always')} warn_percent={h.get('warn_percent', 80)} "
+            f"plugin_dir={CONTEXT_HOOK_PLUGIN_DIR}"
+        )
+        return 0
+    if args.hook_cmd == "uninstall":
+        msg = uninstall_context_hook(cfg)
+        print(f"hook uninstalled: {msg}")
+        return 0
+    return 2
+
+
 # ----------------------------------------------------------- copy-global
 def run_copy_global(cfg: dict[str, Any], wanted: list[str], r: Report, dry_run: bool = False) -> None:
     if not GLOBAL_AGENTS.exists() or GLOBAL_AGENTS.stat().st_size == 0:
@@ -1672,6 +1850,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap_boot.add_argument("--schedule-time")
     ap_boot.add_argument("--timezone")
     ap_boot.add_argument("--profile", choices=list(BUDGET_PROFILES))
+    ap_boot.add_argument("--context-hook", choices=["on", "off"])
+    ap_boot.add_argument("--hook-mode", choices=["always", "threshold"])
+    ap_boot.add_argument("--hook-warn", type=float)
     ap_boot.add_argument("--target", action="append", default=[])
     ap_boot.add_argument("--no-global-files", action="store_true")
     ap_boot.add_argument("--force-global", action="store_true")
@@ -1685,6 +1866,9 @@ def build_parser() -> argparse.ArgumentParser:
     cfg_set.add_argument("--schedule", choices=["on", "off"])
     cfg_set.add_argument("--auto-discover", choices=["on", "off"])
     cfg_set.add_argument("--profile", choices=list(BUDGET_PROFILES))
+    cfg_set.add_argument("--context-hook", choices=["on", "off"])
+    cfg_set.add_argument("--hook-mode", choices=["always", "threshold"])
+    cfg_set.add_argument("--hook-warn", type=float)
     cfg_set.add_argument("--cross-sync", choices=["on", "off"])
     cfg_set.add_argument("--add-target", action="append", default=[])
     cfg_set.add_argument("--remove-target", action="append", default=[])
@@ -1733,6 +1917,16 @@ def build_parser() -> argparse.ArgumentParser:
     ma_grp.add_argument("--on", action="store_true")
     ma_grp.add_argument("--off", action="store_true")
 
+    ap_hk = sp.add_parser("hook")
+    hk_sp = ap_hk.add_subparsers(dest="hook_cmd", required=True)
+    hk_ins = hk_sp.add_parser("install")
+    hk_ins.add_argument("--script", default="")
+    hk_ins.add_argument("--python", default="")
+    hk_ins.add_argument("--mode", choices=["always", "threshold"])
+    hk_ins.add_argument("--warn-percent", type=float)
+    hk_sp.add_parser("status")
+    hk_sp.add_parser("uninstall")
+
     ap_cp = sp.add_parser("copy-global")
     ap_cp.add_argument("--targets", default="")
     ap_cp.add_argument("--dry-run", action="store_true")
@@ -1755,6 +1949,7 @@ def main() -> int:
         "apply": cmd_apply,
         "init": cmd_init,
         "ws": cmd_ws,
+        "hook": cmd_hook,
         "copy-global": cmd_copy_global,
     }
     return handlers[args.cmd](args)

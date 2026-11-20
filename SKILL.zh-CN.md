@@ -25,6 +25,7 @@ English version: [SKILL.md](./SKILL.md)
 | 全局正文 | `~/.gemini/memories/*.md` | `user / feedback / project / reference` 单一真相源 |
 | 同步手册 *(开启缓存时)* | `~/.gemini/memory-ops/RUNBOOK.md` | 定时任务或手动蒸馏 `AGENTS.md` 的操作规程 |
 | 全局快照 *(开启缓存时)* | `~/.gemini/AGENTS.md` | 由 `memsync apply` 生成的初始热缓存 |
+| 上下文 Hook *(开启监控时)* | `~/.gemini/memory-ops/context_hook.py` 与 `~/.gemini/config/plugins/milkfrog-context-hook/` | 自动读取当前占用并在 >=80% 时提醒先落盘记忆的 `PreInvocation` 插件 |
 | 定时 Sidecar *(开启定时时)* | `~/.gemini/config/sidecars/daily-agents-memory-sync/sidecar.json` | Antigravity IDE 后台 cron 配置（绝不静默代开） |
 
 **完成标志**：使用实测可用的 Python 命令运行 `memsync.py lint` 返回 `errors=0`，所有改写前旧文件已备份，且日常读写不再依赖本 Skill。
@@ -73,7 +74,11 @@ English version: [SKILL.md](./SKILL.md)
 6. **预生成本机工具速查正本（`memories/local-installed-tools.md`）** *(若已有或迁移过可跳过)*：
    - `(Recommended) 用 doctor 探测到的 PATH 开发工具先行生成 local-installed-tools.md（sync: auto），开局即可给全局 AGENTS.md 第四节供速查`
    - `暂不预生成（后续安装软件或踩到系统坑时再由 Agent 自动汇总建档）`
-7. **跨端分发** *(仅选双层模式且本机探测到 `~/.codex` / `~/.claude` 时才问)*：
+7. **上下文占用自动注入 Hook** *(可选开启，防止长任务压缩前遗漏未落盘规则)*：
+   - `(Recommended) 全程注入精简占用，并在 >=80% 时附带记忆抢救提醒`（`mode="always"`，`warn_percent=80`）
+   - `仅高水位提醒：80% 以下完全静默，>=80% 时注入抢救提醒`（`mode="threshold"`，`warn_percent=80`）
+   - `暂不安装 Hook`
+8. **跨端分发** *(仅选双层模式且本机探测到 `~/.codex` / `~/.claude` 时才问)*：
    - 勾选需要在更新全局快照后自动同步覆盖的外部工具。
 
 ### 第 3 步 · 先迁旧规则再落盘（如选了翻译迁入）
@@ -83,8 +88,8 @@ English version: [SKILL.md](./SKILL.md)
 
 ### 第 4 步 · 写入脚本、配置、模板并跑通首轮校验
 
-1. 复制 `./scripts/memsync.py` 到 `~/.gemini/memory-ops/memsync.py`；复制 `./references/architecture.zh-CN.md`（或英文版）到 `~/.gemini/memory-ops/DESIGN.md`。
-2. 运行 `bootstrap` 生成 `config.json` 与目录结构（后续若直接套完整模板写入全局 `GEMINI.md`，加 `--no-global-files`）：
+1. 复制 `./scripts/memsync.py` 到 `~/.gemini/memory-ops/memsync.py`（若开启上下文 Hook，同步复制 `./scripts/context_hook.py` 到 `~/.gemini/memory-ops/context_hook.py`）；复制 `./references/architecture.zh-CN.md`（或英文版）到 `~/.gemini/memory-ops/DESIGN.md`。
+2. 运行 `bootstrap` 生成 `config.json` 与目录结构（后续若直接套完整模板写入全局 `GEMINI.md`，加 `--no-global-files`；开启 Hook 时直接传入 `--context-hook on --hook-mode <always|threshold> --hook-warn 80`）：
    ```bash
    <PYTHON_CMD> ~/.gemini/memory-ops/memsync.py bootstrap \
      --lang <zh|en> \
@@ -93,9 +98,11 @@ English version: [SKILL.md](./SKILL.md)
      --schedule-time <HH:MM> \
      --timezone <IANA_TZ> \
      --profile <standard|extended> \
+     --context-hook <on|off> \
+     --hook-mode <always|threshold> \
      --no-global-files
    ```
-   有勾选外部工具时附带 `--target name=path`。
+   有勾选外部工具时附带 `--target name=path`。传入 `--context-hook on`（或后续手动执行 `<PYTHON_CMD> ~/.gemini/memory-ops/memsync.py hook install`）会自动生成 `~/.gemini/config/plugins/milkfrog-context-hook/`（含 `plugin.json` 和适配各系统引号的 `hooks.json`），无需手改 JSON。
 3. 写入全局 `~/.gemini/GEMINI.md`：写入前若存在原件先备份进 `~/.gemini/memory-ops/backup/`；套用 `templates/zh/global-gemini.full.md` 或 `.index-only.md`（替换 `{{MEMORY_HOME}}`、`{{OPS_DIR}}`、`{{PYTHON_CMD}}`、`{{BUDGET_PROFILE}}`），并写入已确认迁入的记忆正文与单行索引。若用户选择预生成工具清单，则把 `detected_toolchains` 核实到的 SDK/包管与用户确认的镜像/代理写进 `~/.gemini/memories/local-installed-tools.md`（`type: reference`、`scope: global`、`sync: auto`）并加入索引（密钥指针另建 `sync: never` 文件，绝不混写）。
 4. 若开启双层模式：生成 `~/.gemini/memory-ops/RUNBOOK.md`；如已有记忆正文，跑一遍 `sync-plan -> global-input -> draft -> apply --scope global` 生成首份全局快照，否则写初始骨架。
 5. 如用户要同时初始化当前打开的工作区 `<cwd>`：运行 `init "<cwd>" --summary "<定位>"`（保留原件则加 `--no-manage-agents`），写入项目记忆并用同样流程生成工作区 `AGENTS.md`。
@@ -131,4 +138,4 @@ English version: [SKILL.md](./SKILL.md)
    <PYTHON_CMD> ~/.gemini/memory-ops/memsync.py lint
    ```
 2. 若开启双层模式，再跑一次 `sync-plan` 确认状态干净无异常漂移。
-3. 清晰交代给用户：新建/改动了哪些文件、备份在哪里、当前开关状态位是什么，并告知**日常已经完全由 `GEMINI.md` 接管，本 Skill 可以随时移除或停用**。
+3. 清晰交代给用户：新建/改动了哪些文件、备份在哪里、当前开关状态位是什么（若安装了上下文 Hook，给出 `[milkfrog-context-hook](customization://milkfrog-context-hook)` 开关入口，告知自下轮用户对话起生效，且可用 `memsync.py hook uninstall` 随时卸载），并告知**日常已经完全由 `GEMINI.md` 接管，本 Skill 可以随时移除或停用**。

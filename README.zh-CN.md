@@ -28,7 +28,7 @@
 
 这套记忆方案不接外部向量库、不调外部摘要 API，所有数据留在你本机 Markdown 里，按职责拆成两层：
 
-1. **索引与真相源（`GEMINI.md` + `memories/*.md`）**：每次任务做完由 Agent 裁决沉淀，只留长期有用的事实，拆成 `user / feedback / project / reference` 四类，全局和单项目各管各的。
+1. **索引与真相源（`GEMINI.md` + `memories/*.md`）**：按「硬禁用/纠偏与实锤踩坑当场落盘 + 普通结论收尾裁决」维护，拆成 `user / feedback / project / reference` 四类，全局和单项目各管各的；可选开启 **`milkfrog-context-hook`**（`PreInvocation`），每次推理前自动把上下文占用与 ≥80% 记忆抢救提醒注进对话，防止长任务在压缩前丢掉未写规则。
 2. **可选热缓存（`AGENTS.md` + `memsync.py`）**：纯标准库 Python 脚本按 `sha256` 检测增量变化，跳过零改动作用域、拦截疑似明文密钥，在你需要时或每天定时把变动部分蒸馏进紧凑的 `AGENTS.md` 快照。
 
 安装验收通过后，**日常读写规则全部内嵌进 `~/.gemini/GEMINI.md` 头部**——哪怕你事后把本 Skill 删掉，记忆系统照常运转。只有做二次开发或调整阈值时才需要回看设计文档（安装时会一并拷贝一份 `DESIGN.md` 留在本地）。
@@ -71,9 +71,9 @@
 
 3. Agent 会按流程自动完成：
    - 先只读运行 `memsync.py doctor --json` 摸清你的 Python 命令、时区、现有 `GEMINI.md` / `AGENTS.md` 和外部 Agent 目录。
-   - 一次问清你的选择：双层模式还是纯索引模式、要不要开启每日定时同步、用 `24 KB` 标准档还是扩展档，以及如果检测到旧版 `AGENTS.md` / `GEMINI.md` 时选「翻译拆解迁入（推荐）」「保留原件不接管」还是「忽略目录」。
+   - 一次问清你的选择：双层模式还是纯索引模式、要不要开启每日定时同步、要不要安装 `PreInvocation` 上下文占用监控 Hook、用 `24 KB` 标准档还是扩展档，以及如果检测到旧版 `AGENTS.md` / `GEMINI.md` 时选「翻译拆解迁入（推荐）」「保留原件不接管」还是「忽略目录」。
    - 如果选翻译迁入，Agent 会先列出**保留/舍弃裁决表**让你确认、把原版备份进 `memory-ops/backup/` 再拆写入库。
-   - 把 `memsync.py` 和离线设计正本 `DESIGN.md` 复制进 `~/.gemini/memory-ops/`，生成 `config.json` 与全局 `GEMINI.md`；若你开启了定时同步，会生成 `sidecar.json` 并引导你到 Automations 面板手动点启用，绝不静默篡改全局开关。
+   - 把 `memsync.py`（及可选 `context_hook.py`）和离线设计正本 `DESIGN.md` 复制进 `~/.gemini/memory-ops/`，生成 `config.json` 与全局 `GEMINI.md`；开启 Hook 时自动写入 `~/.gemini/config/plugins/milkfrog-context-hook/`；若你开启了定时同步，会生成 `sidecar.json` 并引导你到 Automations 面板手动点启用，绝不静默篡改全局开关。
    - 跑通 `memsync.py lint` 确认 `ERROR 0` 后交接给你。
 
 ---
@@ -85,7 +85,8 @@ milkfrog-memory-skill/
 ├── SKILL.md                      # 英文安装与迁移指导书
 ├── SKILL.zh-CN.md                # 中文安装与迁移指导书
 ├── scripts/
-│   └── memsync.py                # 零依赖 Python 3.9+ 运维与同步脚本
+│   ├── memsync.py                # 零依赖 Python 3.9+ 运维与同步脚本
+│   └── context_hook.py           # PreInvocation 上下文占用注入与 >=80% 抢救提醒 Hook
 ├── templates/
 │   ├── zh/                       # 中文全局模板（双层版 / 纯索引版）与 RUNBOOK
 │   ├── en/                       # 英文对应模板
