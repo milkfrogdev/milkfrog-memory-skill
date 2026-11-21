@@ -19,6 +19,8 @@
 | `context_hook.enabled` | `bool` | `false` | 控制 `context_hook.py` 是否注入上下文占用（配合 `milkfrog-context-hook` 插件）。 |
 | `context_hook.mode` | `"threshold" \| "always"` | `"threshold"` | `"threshold"`：默认，仅达 `warn_percent` 以上注入抢救提醒，低水位静默；`"always"`：每次推理都注精简占用、达线加抢救提醒。 |
 | `context_hook.warn_percent` | `number` | `80` | 触发记忆抢救提醒的百分比阈值（`1–99`）。 |
+| `context_hook.cooldown_calls` | `int` | `3` | 高水位冷却步数：达到预警线后每 `N` 次模型调用最多提醒 1 次（`1` 表示不节流）。 |
+| `context_hook.critical_percent` | `number` | `92` | 危急破例阈值（`1–100`，`0` 关闭）：冷却期内首次冲过该线立即补提醒 1 次。 |
 | `workspaces[]` | `array` | `[]` | 每项 `{name, path, summary, enabled, manage_agents?}`；单仓库设 `manage_agents: false` 可永久保留他人原版 `AGENTS.md`。 |
 | `ignored[]` | `array` | `[]` | 忽略目录列表 `{path, reason, added}`，跳过新工作区初始化提示。 |
 
@@ -52,10 +54,10 @@ metadata:
 支持通过环境变量 `MILKFROG_MEMORY_HOME` 覆盖默认 `~/.gemini` 路径（用于沙箱隔离测试或自定义目录）。
 
 - `doctor [--json]`：只读检查 Python 版本、OS、时区、已有 `GEMINI.md`/`AGENTS.md`、`memories/local-installed-tools.md`、外部工具目录、`PATH` 上常见开发命令（`detected_toolchains`）与 Antigravity 项目列表，不改动任何文件。
-- `bootstrap [--lang zh|en] [--agents-cache on|off] [--schedule on|off] [--schedule-time HH:MM] [--timezone TZ] [--profile standard|extended] [--auto-discover on|off] [--context-hook on|off] [--hook-mode always|threshold] [--hook-warn N] [--target name=path] [--no-global-files] [--force-global]`：幂等建好 `memory-ops/` 目录与 `config.json`（传入 `--context-hook on` 会顺带安装 `milkfrog-context-hook` 插件）。
+- `bootstrap [--lang zh|en] [--agents-cache on|off] [--schedule on|off] [--schedule-time HH:MM] [--timezone TZ] [--profile standard|extended] [--auto-discover on|off] [--context-hook on|off] [--hook-mode threshold|always] [--hook-warn N] [--hook-cooldown N] [--hook-critical N] [--target name=path] [--no-global-files] [--force-global]`：幂等建好 `memory-ops/` 目录与 `config.json`（传入 `--context-hook on` 会顺带安装 `milkfrog-context-hook` 插件）。
 - `config show`：查看当前归一化后的 `config.json`。
-- `config set [--lang zh|en] [--agents-cache on|off] [--schedule on|off] [--auto-discover on|off] [--profile standard|extended] [--context-hook on|off] [--hook-mode always|threshold] [--hook-warn N] [--cross-sync on|off] [--add-target name=path] [--remove-target name]`：随时调整模式开关、Hook 策略与阈值档位。
-- `hook install [--script PATH] [--python CMD] [--mode always|threshold] [--warn-percent N]`：复制 `context_hook.py` 到 `memory-ops/` 并自动写入 `~/.gemini/config/plugins/milkfrog-context-hook/`（`plugin.json` + `hooks.json`）。
+- `config set [--lang zh|en] [--agents-cache on|off] [--schedule on|off] [--auto-discover on|off] [--profile standard|extended] [--context-hook on|off] [--hook-mode threshold|always] [--hook-warn N] [--hook-cooldown N] [--hook-critical N] [--cross-sync on|off] [--add-target name=path] [--remove-target name]`：随时调整模式开关、Hook 策略与阈值档位。
+- `hook install [--script PATH] [--python CMD] [--mode threshold|always] [--warn-percent N] [--cooldown N] [--critical-percent N]`：复制 `context_hook.py` 到 `memory-ops/` 并自动写入 `~/.gemini/config/plugins/milkfrog-context-hook/`（`plugin.json` + `hooks.json`）。
 - `hook status`：查看 Hook 配置与插件安装状态。
 - `hook uninstall`：备份 `hooks.json` 后移除 `milkfrog-context-hook` 并把 `context_hook.enabled` 置 `false`。
 - `lint`：检查各启用作用域结构、链接、frontmatter、疑似明文密钥、字节阈值、`.gitignore` 与未初始化工作区，输出报告到 `work/lint-YYYY-MM-DD.md`。

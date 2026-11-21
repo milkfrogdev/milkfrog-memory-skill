@@ -60,7 +60,7 @@ Antigravity 的后台定时任务和 Swarm 多 Agent 看板会在 `~/.gemini/con
 - `init` 在 `.git` 仓库内自动把 `.gemini/memories/` 追加进 `.gitignore`。
 
 ### 可选 `PreInvocation` 上下文占用监控 Hook
-如果长任务还没结束就触发了压缩，只在任务结束才写记忆的规则容易漏掉中途刚定下的禁用项和踩坑。通过 `memsync.py hook install` 自动挂载的 `milkfrog-context-hook` 插件会在每次模型调用前执行纯标准库脚本 `context_hook.py`，只读当前会话 SQLite 快照（失败回退 `transcript.jsonl`），把实时上下文占用及 **≥80%** 记忆抢救提醒直接注进对话。
+如果长任务还没结束就触发了压缩，只在任务结束才写记忆的规则容易漏掉中途刚定下的禁用项和踩坑。通过 `memsync.py hook install` 自动挂载的 `milkfrog-context-hook` 插件会在模型调用前执行纯标准库脚本 `context_hook.py`，只读当前会话 SQLite 快照（失败回退 `transcript.jsonl`）；默认 **80% 以下静默**，达到 **≥80%** 时注入记忆抢救提醒，并通过反向扫描 `transcript.jsonl` 尾部做无状态频控（默认每 **3** 次模型调用最多提醒 1 次，冷却期内首次冲过 **≥92%** 危急线破例立即补提醒 1 次，零额外状态文件）。
 
 ### 单向跨端同步（不做双向对账）
 多端双向同步极易互相覆盖冲突。本方案把全局 `AGENTS.md` 视为唯一上游，仅在阶段 2 `apply --scope global` 成功后（或手跑 `copy-global`），自动备份旧文件并单向覆盖配置好的外部目标（如 `~/.codex/AGENTS.md`、`~/.claude/CLAUDE.md`）。

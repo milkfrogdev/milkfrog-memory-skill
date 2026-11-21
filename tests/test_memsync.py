@@ -470,6 +470,8 @@ class TestMilkFrogMemorySkill(unittest.TestCase):
         self.assertIn("context_hook=installed", boot.stdout)
         cfg_boot = json.loads((self.ops / "config.json").read_text(encoding="utf-8"))
         self.assertEqual(cfg_boot["context_hook"]["mode"], "threshold")
+        self.assertEqual(cfg_boot["context_hook"]["cooldown_calls"], 3)
+        self.assertEqual(cfg_boot["context_hook"]["critical_percent"], 92)
 
         installed_script = self.ops / "context_hook.py"
         plugin_dir = self.mem_home / "config" / "plugins" / "milkfrog-context-hook"
@@ -536,6 +538,7 @@ class TestMilkFrogMemorySkill(unittest.TestCase):
         msg_high = high_sys["systemMessage"]
         self.assertIn("上下文预警", msg_high)
         self.assertIn("81.7%", msg_high)
+        self.assertIn("如果没有请忽略本消息", msg_high)
 
         # Standalone script without config.json also defaults to threshold (alerts at >= 80%)
         cfg_file = self.ops / "config.json"
@@ -543,6 +546,64 @@ class TestMilkFrogMemorySkill(unittest.TestCase):
         cfg_file.unlink()
         self.assertIn("上下文预警", call_hook({"conversationId": cid})["injectSteps"][0]["systemMessage"]["systemMessage"])
         cfg_file.write_text(saved_cfg, encoding="utf-8")
+
+        # Cooldown (every 3 PLANNER_RESPONSE calls) + >=92% single critical bypass across large chunks
+        tp1 = self.mem_home / "antigravity" / "brain" / cid / ".system_generated" / "logs" / "transcript.jsonl"
+        tp1.parent.mkdir(parents=True, exist_ok=True)
+        filler_generic = json.dumps({"type": "GENERIC", "content": "x" * 310_000})
+
+        def write_tp(lines: list[dict[str, object]], pad_large: bool = False) -> None:
+            rows = [json.dumps(x, ensure_ascii=False) for x in lines]
+            if pad_large:
+                rows.insert(-1, filler_generic)
+            tp1.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+        alert_81 = {"source": "SYSTEM_SDK", "type": "SYSTEM_MESSAGE", "content": msg_high}
+        planner_step = {"type": "PLANNER_RESPONSE", "input_tokens": 5000, "cache_read_tokens": 595000}
+
+        # 1 and 2 PLANNER_RESPONSE calls after 81.7% alert stay throttled (even across >300KB filler)
+        write_tp([alert_81, planner_step], pad_large=True)
+        self.assertEqual(call_hook({"conversationId": cid, "transcriptPath": str(tp1)}), {})
+        write_tp([alert_81, planner_step, planner_step])
+        self.assertEqual(call_hook({"conversationId": cid, "transcriptPath": str(tp1)}), {})
+
+        # In always mode while throttled, high-water falls back to compact status rather than repeating full alert
+        run_memsync(self.mem_home, "config", "set", "--hook-mode", "always")
+        always_throttled = call_hook({"conversationId": cid, "transcriptPath": str(tp1)})["injectSteps"][0]["systemMessage"]["systemMessage"]
+        self.assertIn("[上下文]", always_throttled)
+        self.assertNotIn("上下文预警", always_throttled)
+        run_memsync(self.mem_home, "config", "set", "--hook-mode", "threshold")
+
+        # Reaching 3 PLANNER_RESPONSE calls after alert fires again
+        write_tp([alert_81, planner_step, planner_step, planner_step])
+        self.assertIn("上下文预警", call_hook({"conversationId": cid, "transcriptPath": str(tp1)})["injectSteps"][0]["systemMessage"]["systemMessage"])
+
+        # During cooldown (1 call after 81.7%), jumping to >=92% triggers ONE critical bypass
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO gen_metadata VALUES (2, ?)", (make_gen_blob(5000, 678000, 734000),))
+        conn.commit()
+        conn.close()
+        write_tp([alert_81, planner_step])
+        crit_msg = call_hook({"conversationId": cid, "transcriptPath": str(tp1)})["injectSteps"][0]["systemMessage"]["systemMessage"]
+        self.assertIn("93.1%", crit_msg)
+        self.assertIn("如果没有请忽略本消息", crit_msg)
+
+        # Next call at 93.1%+ within cooldown (after critical alert already fired) is throttled again
+        alert_93 = {"source": "SYSTEM_SDK", "type": "SYSTEM_MESSAGE", "content": crit_msg}
+        write_tp([alert_93, planner_step])
+        self.assertEqual(call_hook({"conversationId": cid, "transcriptPath": str(tp1)}), {})
+
+        # Verify cooldown/critical flags via config set and hook status, plus English alert wording
+        run_memsync(self.mem_home, "config", "set", "--lang", "en", "--hook-cooldown", "5", "--hook-critical", "95")
+        hk_stat = run_memsync(self.mem_home, "hook", "status")
+        self.assertIn("cooldown_calls=5", hk_stat.stdout)
+        self.assertIn("critical_percent=95", hk_stat.stdout)
+        write_tp([alert_93, planner_step, planner_step, planner_step, planner_step])
+        self.assertEqual(call_hook({"conversationId": cid}), {})
+        write_tp([alert_93, planner_step, planner_step, planner_step, planner_step, planner_step])
+        en_high = call_hook({"conversationId": cid})["injectSteps"][0]["systemMessage"]["systemMessage"]
+        self.assertIn("[Context Alert", en_high)
+        self.assertIn("if none, ignore this message.", en_high)
 
         # switch language to English + verify transcript fallback when DB missing
         run_memsync(self.mem_home, "config", "set", "--lang", "en", "--hook-mode", "always")

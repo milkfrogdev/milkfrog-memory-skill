@@ -28,7 +28,7 @@ Vector RAG or raw transcript search answers *"what did we discuss two weeks ago?
 
 This skill installs a plain-Markdown, zero-API-call memory architecture split into two layers:
 
-1. **Source of Truth (`GEMINI.md` + `memories/*.md`)**: Two-stage curation — durable user bans, corrections, and verified pitfalls are saved immediately in the same turn, while general findings are evaluated post-task across `user`, `feedback`, `project`, and `reference` scopes. Optional **`milkfrog-context-hook`** (`PreInvocation`) stays quiet below threshold by default and injects a `>=80%` rescue reminder (or live usage per call if configured) so long tasks save unwritten rules before compaction.
+1. **Source of Truth (`GEMINI.md` + `memories/*.md`)**: Two-stage curation — durable user bans, corrections, and verified pitfalls are saved immediately in the same turn, while general findings are evaluated post-task across `user`, `feedback`, `project`, and `reference` scopes. Optional **`milkfrog-context-hook`** (`PreInvocation`) stays quiet below `80%` by default and injects a rate-limited `>=80%` rescue reminder (at most once per `3` model calls, with one `>=92%` critical bypass) so long tasks save unwritten rules before compaction.
 2. **Optional Hot Cache (`AGENTS.md` + `memsync.py`)**: A pure-stdlib Python utility hashes files in `sync-state.json`, computes incremental diffs (`[NEW]` / `[MODIFIED]` / `[DELETED]`), skips unchanged scopes, guards against secret leaks, and keeps `AGENTS.md` snapshots synced (either on demand or via an optional Antigravity daily cron sidecar).
 
 Once setup finishes, **daily memory operations live inside `~/.gemini/GEMINI.md` itself** — you can disable or delete this skill and the system keeps working.

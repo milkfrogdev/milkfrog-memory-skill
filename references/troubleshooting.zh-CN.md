@@ -36,11 +36,11 @@ Antigravity 定时自动化在无人值守会话里运行，没放行在 `access
 
 ## 6. 切换或卸载上下文监控 Hook
 
-- 不动 `hooks.json`，一条命令把 Hook 在“仅 ≥80% 才提醒（`threshold`，默认）”和“全程注精简水位（`always`）”之间切换：
+- 不动 `hooks.json`，一条命令把 Hook 在“仅 ≥80% 才提醒（`threshold`，默认每 `3` 次模型调用最多提醒 1 次 + `≥92%` 危急线破例 1 次）”和“全程注精简水位（`always`）”之间切换或调参：
   ```bash
   python ~/.gemini/memory-ops/memsync.py config set --hook-mode always
   ```
-  切回默认高水位静默模式：`memsync.py config set --hook-mode threshold --hook-warn 80`。
+  切回默认高水位静默并自定义频控与危急线：`memsync.py config set --hook-mode threshold --hook-warn 80 --hook-cooldown 3 --hook-critical 92`（设 `--hook-cooldown 1` 关闭频控，`--hook-critical 0` 关闭危急破例）。
 - 想临时关闭可在 Antigravity 插件设置页开关 `milkfrog-context-hook`，彻底移除可执行：
   ```bash
   python ~/.gemini/memory-ops/memsync.py hook uninstall

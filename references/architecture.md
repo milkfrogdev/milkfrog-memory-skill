@@ -60,7 +60,7 @@ Antigravity records scheduled cron runs and swarm sub-workspaces under `~/.gemin
 - `init` automatically adds `.gemini/memories/` to `.gitignore` inside git repositories.
 
 ### Optional `PreInvocation` Context Monitor Hook
-Wait-until-task-end memory rules fail if auto-compaction hits mid-task after a user states a new ban or constraint. Installing the optional `milkfrog-context-hook` plugin (`memsync.py hook install`) wires a pure-stdlib `PreInvocation` hook (`context_hook.py`) that reads the active Antigravity conversation SQLite snapshot (with `transcript.jsonl` fallback) and injects compact context occupancy plus a rescue alert at `>= 80%`.
+Wait-until-task-end memory rules fail if auto-compaction hits mid-task after a user states a new ban or constraint. Installing the optional `milkfrog-context-hook` plugin (`memsync.py hook install`) wires a pure-stdlib `PreInvocation` hook (`context_hook.py`) that reads the active Antigravity conversation SQLite snapshot (with `transcript.jsonl` fallback); by default it stays silent below `80%`, injects a rescue alert at `>= 80%`, and performs stateless rate limiting via reverse tail-scanning of `transcript.jsonl` (at most once every `3` model calls, with a single emergency bypass upon first crossing `>= 92%`, writing zero state files).
 
 ### One-Way Cross-Tool Distribution
 Multi-tool bi-directional reconciliation causes constant merge drift. `memsync.py copy-global` treats `~/.gemini/AGENTS.md` as the single upstream source, backing up and overwriting configured targets such as `~/.codex/AGENTS.md` or `~/.claude/CLAUDE.md` only when global `apply` runs (or manually via `copy-global`).

@@ -19,6 +19,8 @@ If an older `~/.gemini/memory-ops/workspaces.json` exists and `config.json` does
 | `context_hook.enabled` | `bool` | `false` | Controls whether `context_hook.py` injects live context usage (`milkfrog-context-hook` plugin). |
 | `context_hook.mode` | `"threshold" \| "always"` | `"threshold"` | `"threshold"`: default, silent below `warn_percent` and injects rescue alert at/above threshold; `"always"`: inject compact usage before every invocation + alert at threshold. |
 | `context_hook.warn_percent` | `number` | `80` | Context occupancy percentage threshold (`1–99`) that triggers the pre-compaction memory rescue alert. |
+| `context_hook.cooldown_calls` | `int` | `3` | Minimum model calls (`PLANNER_RESPONSE`) between repeated alerts (`1` disables throttling). |
+| `context_hook.critical_percent` | `number` | `92` | Emergency threshold (`1–100`, `0` disables): bypasses cooldown once when first crossed during cooldown. |
 | `workspaces[]` | `array` | `[]` | Each entry: `{name, path, summary, enabled, manage_agents?}`. Setting `manage_agents: false` keeps an existing foreign `AGENTS.md` untouched in that single repo. |
 | `ignored[]` | `array` | `[]` | Throwaway paths suppressed from new-workspace discovery: `{path, reason, added}`. |
 
@@ -55,10 +57,10 @@ Environment override for isolated testing or non-default paths:
 
 Subcommands:
 - `doctor [--json]`: Read-only inspection of Python, OS, timezone, existing `GEMINI.md`/`AGENTS.md`, `memories/local-installed-tools.md`, external tools (`~/.codex`, `~/.claude`), common CLI toolchains on `PATH` (`detected_toolchains`), and Antigravity projects.
-- `bootstrap [--lang zh|en] [--agents-cache on|off] [--schedule on|off] [--schedule-time HH:MM] [--timezone TZ] [--profile standard|extended] [--auto-discover on|off] [--context-hook on|off] [--hook-mode always|threshold] [--hook-warn N] [--target name=path] [--no-global-files] [--force-global]`: Idempotently sets up `memory-ops/` and writes `config.json` (plus installs `milkfrog-context-hook` when `--context-hook on`).
+- `bootstrap [--lang zh|en] [--agents-cache on|off] [--schedule on|off] [--schedule-time HH:MM] [--timezone TZ] [--profile standard|extended] [--auto-discover on|off] [--context-hook on|off] [--hook-mode threshold|always] [--hook-warn N] [--hook-cooldown N] [--hook-critical N] [--target name=path] [--no-global-files] [--force-global]`: Idempotently sets up `memory-ops/` and writes `config.json` (plus installs `milkfrog-context-hook` when `--context-hook on`).
 - `config show`: Prints normalized `config.json`.
-- `config set [--lang zh|en] [--agents-cache on|off] [--schedule on|off] [--auto-discover on|off] [--profile standard|extended] [--context-hook on|off] [--hook-mode always|threshold] [--hook-warn N] [--cross-sync on|off] [--add-target name=path] [--remove-target name]`: Updates state flags without editing files manually.
-- `hook install [--script PATH] [--python CMD] [--mode always|threshold] [--warn-percent N]`: Stages `context_hook.py` into `memory-ops/` and creates `~/.gemini/config/plugins/milkfrog-context-hook/` (`plugin.json` + `hooks.json`).
+- `config set [--lang zh|en] [--agents-cache on|off] [--schedule on|off] [--auto-discover on|off] [--profile standard|extended] [--context-hook on|off] [--hook-mode threshold|always] [--hook-warn N] [--hook-cooldown N] [--hook-critical N] [--cross-sync on|off] [--add-target name=path] [--remove-target name]`: Updates state flags without editing files manually.
+- `hook install [--script PATH] [--python CMD] [--mode threshold|always] [--warn-percent N] [--cooldown N] [--critical-percent N]`: Stages `context_hook.py` into `memory-ops/` and creates `~/.gemini/config/plugins/milkfrog-context-hook/` (`plugin.json` + `hooks.json`).
 - `hook status`: Reports `context_hook` config flags and plugin install status.
 - `hook uninstall`: Backs up `hooks.json`, removes `milkfrog-context-hook`, and sets `context_hook.enabled = false`.
 - `lint`: Audits all enabled scopes, links, frontmatter, secrets, budgets, `.gitignore`, and unregistered folders; writes `work/lint-YYYY-MM-DD.md`.

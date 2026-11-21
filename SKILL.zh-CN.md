@@ -75,8 +75,8 @@ English version: [SKILL.md](./SKILL.md)
    - `(Recommended) 用 doctor 探测到的 PATH 开发工具先行生成 local-installed-tools.md（sync: auto），开局即可给全局 AGENTS.md 第四节供速查`
    - `暂不预生成（后续安装软件或踩到系统坑时再由 Agent 自动汇总建档）`
 7. **上下文占用自动注入 Hook** *(可选开启，防止长任务压缩前遗漏未落盘规则)*：
-   - `(Recommended) 仅高水位提醒：80% 以下完全静默，>=80% 时注入抢救提醒`（`mode="threshold"`，`warn_percent=80`）
-   - `全程注入精简占用，并在 >=80% 时附带记忆抢救提醒`（`mode="always"`，`warn_percent=80`）
+   - `(Recommended) 仅高水位提醒：80% 以下完全静默，>=80% 时注入抢救提醒（每 3 次模型调用最多 1 次，>=92% 危急破例 1 次）`（`mode="threshold"`、`warn_percent=80`、`cooldown_calls=3`、`critical_percent=92`）
+   - `全程注入精简占用，并在 >=80% 时附带记忆抢救提醒`（`mode="always"`）
    - `暂不安装 Hook`
 8. **跨端分发** *(仅选双层模式且本机探测到 `~/.codex` / `~/.claude` 时才问)*：
    - 勾选需要在更新全局快照后自动同步覆盖的外部工具。

@@ -259,6 +259,8 @@ def default_config() -> dict[str, Any]:
             "enabled": False,
             "mode": "threshold",
             "warn_percent": 80,
+            "cooldown_calls": 3,
+            "critical_percent": 92,
         },
         "workspaces": [],
         "ignored": [],
@@ -322,8 +324,15 @@ def _normalize_config(raw: dict[str, Any]) -> dict[str, Any]:
         cfg["context_hook"]["enabled"] = bool(raw_hook["enabled"])
     if raw_hook.get("mode") in ("always", "threshold"):
         cfg["context_hook"]["mode"] = raw_hook["mode"]
-    if isinstance(raw_hook.get("warn_percent"), (int, float)):
-        cfg["context_hook"]["warn_percent"] = _clamp_warn_percent(raw_hook["warn_percent"])
+    wp = raw_hook.get("warn_percent")
+    if isinstance(wp, (int, float)) and not isinstance(wp, bool):
+        cfg["context_hook"]["warn_percent"] = _clamp_warn_percent(wp)
+    cd = raw_hook.get("cooldown_calls")
+    if isinstance(cd, (int, float)) and not isinstance(cd, bool):
+        cfg["context_hook"]["cooldown_calls"] = _clamp_cooldown(cd)
+    cp = raw_hook.get("critical_percent")
+    if isinstance(cp, (int, float)) and not isinstance(cp, bool):
+        cfg["context_hook"]["critical_percent"] = _clamp_critical_percent(cp)
 
     if isinstance(raw.get("workspaces"), list):
         cfg["workspaces"] = list(raw["workspaces"])
@@ -1457,6 +1466,10 @@ def cmd_bootstrap(args) -> int:
         cfg["context_hook"]["mode"] = args.hook_mode
     if getattr(args, "hook_warn", None) is not None:
         cfg["context_hook"]["warn_percent"] = _clamp_warn_percent(args.hook_warn)
+    if getattr(args, "hook_cooldown", None) is not None:
+        cfg["context_hook"]["cooldown_calls"] = _clamp_cooldown(args.hook_cooldown)
+    if getattr(args, "hook_critical", None) is not None:
+        cfg["context_hook"]["critical_percent"] = _clamp_critical_percent(args.hook_critical)
     if args.target:
         targets = cfg.setdefault("cross_tool_sync", {}).setdefault("targets", {})
         for spec in args.target:
@@ -1530,6 +1543,10 @@ def cmd_config(args) -> int:
             cfg["context_hook"]["mode"] = args.hook_mode
         if args.hook_warn is not None:
             cfg["context_hook"]["warn_percent"] = _clamp_warn_percent(args.hook_warn)
+        if args.hook_cooldown is not None:
+            cfg["context_hook"]["cooldown_calls"] = _clamp_cooldown(args.hook_cooldown)
+        if args.hook_critical is not None:
+            cfg["context_hook"]["critical_percent"] = _clamp_critical_percent(args.hook_critical)
         if args.cross_sync:
             cfg["cross_tool_sync"]["enabled"] = (args.cross_sync == "on")
         if args.add_target:
@@ -1652,9 +1669,23 @@ def cmd_ws(args) -> int:
     return 2
 
 
+def _clamp_percent(val: float | int, lo: float, hi: float) -> int | float:
+    p = max(lo, min(hi, float(val)))
+    return int(p) if p.is_integer() else p
+
+
 def _clamp_warn_percent(val: float | int) -> int | float:
-    wp = max(1.0, min(99.0, float(val)))
-    return int(wp) if wp.is_integer() else wp
+    return _clamp_percent(val, 1.0, 99.0)
+
+
+def _clamp_critical_percent(val: float | int) -> int | float:
+    if float(val) <= 0:
+        return 0
+    return _clamp_percent(val, 1.0, 100.0)
+
+
+def _clamp_cooldown(val: float | int) -> int:
+    return max(1, int(val))
 
 
 def _resolve_hook_script(script_src: str | None = None) -> Path | None:
@@ -1690,6 +1721,8 @@ def install_context_hook(
     script_src: str | None = None,
     mode: str | None = None,
     warn_percent: float | int | None = None,
+    cooldown_calls: int | None = None,
+    critical_percent: float | int | None = None,
 ) -> tuple[bool, str]:
     src = _resolve_hook_script(script_src)
     if src is None:
@@ -1741,8 +1774,17 @@ def install_context_hook(
         hook_cfg["mode"] = mode
     if warn_percent is not None:
         hook_cfg["warn_percent"] = _clamp_warn_percent(warn_percent)
+    if cooldown_calls is not None:
+        hook_cfg["cooldown_calls"] = _clamp_cooldown(cooldown_calls)
+    if critical_percent is not None:
+        hook_cfg["critical_percent"] = _clamp_critical_percent(critical_percent)
     save_config(cfg)
-    log("hook-install", f"plugin={CONTEXT_HOOK_PLUGIN_DIR} mode={hook_cfg.get('mode')} warn={hook_cfg.get('warn_percent')}")
+    log(
+        "hook-install",
+        f"plugin={CONTEXT_HOOK_PLUGIN_DIR} mode={hook_cfg.get('mode')} "
+        f"warn={hook_cfg.get('warn_percent')} cooldown={hook_cfg.get('cooldown_calls')} "
+        f"critical={hook_cfg.get('critical_percent')}",
+    )
     return True, f"plugin={CONTEXT_HOOK_PLUGIN_DIR} script={dst_script}"
 
 
@@ -1767,12 +1809,17 @@ def cmd_hook(args) -> int:
             script_src=args.script,
             mode=args.mode,
             warn_percent=args.warn_percent,
+            cooldown_calls=args.cooldown,
+            critical_percent=args.critical_percent,
         )
         if not ok:
             print(f"hook install error: {msg}")
             return 2
         h = cfg["context_hook"]
-        print(f"hook installed: {msg} mode={h['mode']} warn_percent={h['warn_percent']}")
+        print(
+            f"hook installed: {msg} mode={h['mode']} warn_percent={h['warn_percent']} "
+            f"cooldown_calls={h['cooldown_calls']} critical_percent={h['critical_percent']}"
+        )
         return 0
     if args.hook_cmd == "status":
         h = cfg.get("context_hook", {})
@@ -1781,6 +1828,7 @@ def cmd_hook(args) -> int:
         print(
             f"context_hook enabled={h.get('enabled', False)} installed={installed} "
             f"script={script_ok} mode={h.get('mode', 'threshold')} warn_percent={h.get('warn_percent', 80)} "
+            f"cooldown_calls={h.get('cooldown_calls', 3)} critical_percent={h.get('critical_percent', 92)} "
             f"plugin_dir={CONTEXT_HOOK_PLUGIN_DIR}"
         )
         return 0
@@ -1853,6 +1901,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap_boot.add_argument("--context-hook", choices=["on", "off"])
     ap_boot.add_argument("--hook-mode", choices=["always", "threshold"])
     ap_boot.add_argument("--hook-warn", type=float)
+    ap_boot.add_argument("--hook-cooldown", type=int)
+    ap_boot.add_argument("--hook-critical", type=float)
     ap_boot.add_argument("--target", action="append", default=[])
     ap_boot.add_argument("--no-global-files", action="store_true")
     ap_boot.add_argument("--force-global", action="store_true")
@@ -1869,6 +1919,8 @@ def build_parser() -> argparse.ArgumentParser:
     cfg_set.add_argument("--context-hook", choices=["on", "off"])
     cfg_set.add_argument("--hook-mode", choices=["always", "threshold"])
     cfg_set.add_argument("--hook-warn", type=float)
+    cfg_set.add_argument("--hook-cooldown", type=int)
+    cfg_set.add_argument("--hook-critical", type=float)
     cfg_set.add_argument("--cross-sync", choices=["on", "off"])
     cfg_set.add_argument("--add-target", action="append", default=[])
     cfg_set.add_argument("--remove-target", action="append", default=[])
@@ -1924,6 +1976,8 @@ def build_parser() -> argparse.ArgumentParser:
     hk_ins.add_argument("--python", default="")
     hk_ins.add_argument("--mode", choices=["always", "threshold"])
     hk_ins.add_argument("--warn-percent", type=float)
+    hk_ins.add_argument("--cooldown", type=int)
+    hk_ins.add_argument("--critical-percent", type=float)
     hk_sp.add_parser("status")
     hk_sp.add_parser("uninstall")
 
