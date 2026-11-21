@@ -84,8 +84,8 @@ Skip questions that do not apply (for example, do not ask about external sync if
 7. **Optional Seed Examples** *(for fresh empty installs)*:
    - Ask whether to keep the vault clean or inspect `examples/milkfrog-demo/` first.
 8. **Context Monitor Hook** *(optional `PreInvocation` hook to warn before compaction erases unwritten rules)*:
-   - `(Recommended) Always inject compact status + rescue alert at >=80%` (`mode="always"`, `warn_percent=80`)
-   - `Alert only at >=80% (stay silent below 80%)` (`mode="threshold"`, `warn_percent=80`)
+   - `(Recommended) Alert only at >=80% (stay silent below 80%)` (`mode="threshold"`, `warn_percent=80`)
+   - `Always inject compact status + rescue alert at >=80%` (`mode="always"`, `warn_percent=80`)
    - `Skip context hook`
 9. **Cross-Tool Export** *(only if Dual-Layer + `doctor` detected `~/.codex` or `~/.claude`)*:
    - Ask which detected tools should receive automatic one-way `AGENTS.md` copies after global updates.

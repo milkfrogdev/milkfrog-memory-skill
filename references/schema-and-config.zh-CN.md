@@ -17,7 +17,7 @@
 | `cross_tool_sync.enabled` | `bool` | `false` | 是否在更新全局 `AGENTS.md` 后顺带复制到其他 Agent 配置。 |
 | `cross_tool_sync.targets` | `{name: path}` | `{}` | 外部目标映射，如 `{"codex": "~/.codex/AGENTS.md", "claude": "~/.claude/CLAUDE.md"}`。 |
 | `context_hook.enabled` | `bool` | `false` | 控制 `context_hook.py` 是否注入上下文占用（配合 `milkfrog-context-hook` 插件）。 |
-| `context_hook.mode` | `"always" \| "threshold"` | `"always"` | `"always"`：每次推理都注精简占用、达线加抢救提醒；`"threshold"`：仅达 `warn_percent` 以上注入。 |
+| `context_hook.mode` | `"threshold" \| "always"` | `"threshold"` | `"threshold"`：默认，仅达 `warn_percent` 以上注入抢救提醒，低水位静默；`"always"`：每次推理都注精简占用、达线加抢救提醒。 |
 | `context_hook.warn_percent` | `number` | `80` | 触发记忆抢救提醒的百分比阈值（`1–99`）。 |
 | `workspaces[]` | `array` | `[]` | 每项 `{name, path, summary, enabled, manage_agents?}`；单仓库设 `manage_agents: false` 可永久保留他人原版 `AGENTS.md`。 |
 | `ignored[]` | `array` | `[]` | 忽略目录列表 `{path, reason, added}`，跳过新工作区初始化提示。 |

@@ -17,7 +17,7 @@ If an older `~/.gemini/memory-ops/workspaces.json` exists and `config.json` does
 | `cross_tool_sync.enabled` | `bool` | `false` | Enables copying global `AGENTS.md` to external agent directories on `apply --scope global`. |
 | `cross_tool_sync.targets` | `{name: path}` | `{}` | Map of external targets, e.g. `{"codex": "~/.codex/AGENTS.md", "claude": "~/.claude/CLAUDE.md"}`. |
 | `context_hook.enabled` | `bool` | `false` | Controls whether `context_hook.py` injects live context usage (`milkfrog-context-hook` plugin). |
-| `context_hook.mode` | `"always" \| "threshold"` | `"always"` | `"always"`: inject compact usage before every invocation + alert at threshold; `"threshold"`: silent below `warn_percent`. |
+| `context_hook.mode` | `"threshold" \| "always"` | `"threshold"` | `"threshold"`: default, silent below `warn_percent` and injects rescue alert at/above threshold; `"always"`: inject compact usage before every invocation + alert at threshold. |
 | `context_hook.warn_percent` | `number` | `80` | Context occupancy percentage threshold (`1–99`) that triggers the pre-compaction memory rescue alert. |
 | `workspaces[]` | `array` | `[]` | Each entry: `{name, path, summary, enabled, manage_agents?}`. Setting `manage_agents: false` keeps an existing foreign `AGENTS.md` untouched in that single repo. |
 | `ignored[]` | `array` | `[]` | Throwaway paths suppressed from new-workspace discovery: `{path, reason, added}`. |

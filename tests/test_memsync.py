@@ -457,18 +457,19 @@ class TestMilkFrogMemorySkill(unittest.TestCase):
                 self.assertNotIn("uv run", txt, f"Found 'uv run' dependency in {path}")
 
     def test_context_hook_install_modes_and_pb_parsing(self) -> None:
-        # Install via bootstrap --context-hook on
+        # Install via bootstrap --context-hook on (omitting --hook-mode verifies default threshold mode)
         boot = run_memsync(
             self.mem_home,
             "bootstrap",
             "--lang", "zh",
             "--agents-cache", "off",
             "--context-hook", "on",
-            "--hook-mode", "always",
             "--hook-warn", "80",
         )
         self.assertEqual(boot.returncode, 0, boot.stdout + boot.stderr)
         self.assertIn("context_hook=installed", boot.stdout)
+        cfg_boot = json.loads((self.ops / "config.json").read_text(encoding="utf-8"))
+        self.assertEqual(cfg_boot["context_hook"]["mode"], "threshold")
 
         installed_script = self.ops / "context_hook.py"
         plugin_dir = self.mem_home / "config" / "plugins" / "milkfrog-context-hook"
@@ -508,7 +509,11 @@ class TestMilkFrogMemorySkill(unittest.TestCase):
             )
             return json.loads(res.stdout.decode("utf-8"))
 
-        # always mode below 80% injects compact usage line
+        # Default threshold mode stays silent below 80%
+        self.assertEqual(call_hook({"conversationId": cid, "lastUserInput": "中文输入测试"}), {})
+
+        # Explicit always mode below 80% injects compact usage line without metadata
+        run_memsync(self.mem_home, "config", "set", "--hook-mode", "always")
         low_out = call_hook({"conversationId": cid, "lastUserInput": "中文输入测试"})
         low_sys = low_out["injectSteps"][0]["systemMessage"]
         self.assertNotIn("metadata", low_sys)
@@ -516,7 +521,7 @@ class TestMilkFrogMemorySkill(unittest.TestCase):
         self.assertIn("[上下文]", msg_low)
         self.assertIn("73.4K / 734.0K (10.0%)", msg_low)
 
-        # threshold mode below 80% stays silent
+        # Switch back to threshold mode -> silent below 80%, alerts at >= 80%
         run_memsync(self.mem_home, "config", "set", "--hook-mode", "threshold", "--hook-warn", "80")
         self.assertEqual(call_hook({"conversationId": cid}), {})
 
@@ -531,6 +536,13 @@ class TestMilkFrogMemorySkill(unittest.TestCase):
         msg_high = high_sys["systemMessage"]
         self.assertIn("上下文预警", msg_high)
         self.assertIn("81.7%", msg_high)
+
+        # Standalone script without config.json also defaults to threshold (alerts at >= 80%)
+        cfg_file = self.ops / "config.json"
+        saved_cfg = cfg_file.read_text(encoding="utf-8")
+        cfg_file.unlink()
+        self.assertIn("上下文预警", call_hook({"conversationId": cid})["injectSteps"][0]["systemMessage"]["systemMessage"])
+        cfg_file.write_text(saved_cfg, encoding="utf-8")
 
         # switch language to English + verify transcript fallback when DB missing
         run_memsync(self.mem_home, "config", "set", "--lang", "en", "--hook-mode", "always")

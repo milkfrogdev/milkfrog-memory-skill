@@ -257,7 +257,7 @@ def default_config() -> dict[str, Any]:
         },
         "context_hook": {
             "enabled": False,
-            "mode": "always",
+            "mode": "threshold",
             "warn_percent": 80,
         },
         "workspaces": [],
@@ -1780,7 +1780,7 @@ def cmd_hook(args) -> int:
         script_ok = (OPS / "context_hook.py").exists()
         print(
             f"context_hook enabled={h.get('enabled', False)} installed={installed} "
-            f"script={script_ok} mode={h.get('mode', 'always')} warn_percent={h.get('warn_percent', 80)} "
+            f"script={script_ok} mode={h.get('mode', 'threshold')} warn_percent={h.get('warn_percent', 80)} "
             f"plugin_dir={CONTEXT_HOOK_PLUGIN_DIR}"
         )
         return 0

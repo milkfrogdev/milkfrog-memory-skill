@@ -36,10 +36,11 @@ Antigravity runs scheduled sidecars unattended and denies non-whitelisted comman
 
 ## 6. Switching or Uninstalling the Context Monitor Hook
 
-- Switch between always-on compact status and alert-only mode (`>= 80%`) without editing `hooks.json`:
+- Switch between alert-only mode (`threshold`, default below `80%`) and always-on compact status (`always`) without editing `hooks.json`:
   ```bash
-  python3 ~/.gemini/memory-ops/memsync.py config set --hook-mode threshold --hook-warn 80
+  python3 ~/.gemini/memory-ops/memsync.py config set --hook-mode always
   ```
+  Switch back to default quiet-until-threshold mode with `memsync.py config set --hook-mode threshold --hook-warn 80`.
 - Temporarily toggle the plugin in Antigravity Customizations UI (`milkfrog-context-hook`) or remove it completely:
   ```bash
   python3 ~/.gemini/memory-ops/memsync.py hook uninstall

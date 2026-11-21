@@ -196,7 +196,7 @@ def load_hook_settings() -> dict[str, Any]:
     cfg_path = Path(__file__).resolve().parent / "config.json"
     defaults: dict[str, Any] = {
         "enabled": True,
-        "mode": "always",
+        "mode": "threshold",
         "warn_percent": 80,
         "lang": "zh",
     }
