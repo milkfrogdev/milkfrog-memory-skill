@@ -510,7 +510,9 @@ class TestMilkFrogMemorySkill(unittest.TestCase):
 
         # always mode below 80% injects compact usage line
         low_out = call_hook({"conversationId": cid, "lastUserInput": "中文输入测试"})
-        msg_low = low_out["injectSteps"][0]["systemMessage"]["systemMessage"]
+        low_sys = low_out["injectSteps"][0]["systemMessage"]
+        self.assertNotIn("metadata", low_sys)
+        msg_low = low_sys["systemMessage"]
         self.assertIn("[上下文]", msg_low)
         self.assertIn("73.4K / 734.0K (10.0%)", msg_low)
 
@@ -524,7 +526,9 @@ class TestMilkFrogMemorySkill(unittest.TestCase):
         conn.commit()
         conn.close()
         high_out = call_hook({"conversationId": cid})
-        msg_high = high_out["injectSteps"][0]["systemMessage"]["systemMessage"]
+        high_sys = high_out["injectSteps"][0]["systemMessage"]
+        self.assertNotIn("metadata", high_sys)
+        msg_high = high_sys["systemMessage"]
         self.assertIn("上下文预警", msg_high)
         self.assertIn("81.7%", msg_high)
 

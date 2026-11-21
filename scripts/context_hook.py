@@ -296,12 +296,12 @@ def main() -> int:
         msg = build_message(used, limit, settings)
         out: dict[str, Any] = {}
         if msg:
+            # Omit metadata: Antigravity's proto scrubber panics on string-valued map entries.
             out = {
                 "injectSteps": [
                     {
                         "systemMessage": {
                             "systemMessage": msg,
-                            "metadata": {"user_markdown": ""},
                         }
                     }
                 ]
