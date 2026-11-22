@@ -29,7 +29,7 @@ For each workspace `<ws>` marked `NEEDS_UPDATE`:
    - Pointers to `<workspace>/GEMINI.md` and `{{MEMORY_HOME}}/GEMINI.md`;
    - `## 1. Active Project Progress & Decisions` (active `project` state; prune deleted/completed items);
    - `## 2. Project-Specific Conventions & Pitfalls` (repo-specific constraints only; never duplicate global rules).
-3. Run `memsync apply --scope <ws> "{{OPS_DIR}}/work/draft-ws-<ws>-<today>.md"` and check the report for `ERROR 0`.
+3. Run `memsync apply --scope <ws> "{{OPS_DIR}}/work/draft-ws-<ws>-<today>.md"` and read `apply-<ws>-<today>.md` to confirm `ERROR 0` (the report also lists applied diff lines).
 
 ### Step 4 · Stage 2: Roll Up Global `AGENTS.md`
 If `[global]` is marked `NEEDS_UPDATE`:
@@ -41,12 +41,19 @@ If `[global]` is marked `NEEDS_UPDATE`:
    - `## 2. Workspaces & Active Projects` (1-2 live summary lines per enabled workspace from Stage-1 snapshots + cross-workspace `project` entries);
    - `## 3. General Engineering Conventions` (`feedback` entries);
    - `## 4. Environment & Tooling Quick Reference` (distill key tool paths, package managers, and OS gotchas from `memories/local-installed-tools.md` and end Section 4 with a fixed pointer to it if that file exists; keep `sync: never` secret pointers strictly redacted).
-3. Run `memsync apply --scope global "{{OPS_DIR}}/work/draft-global-<today>.md"` and verify `ERROR 0` (when `cross_tool_sync.enabled=true`, external targets are automatically backed up and synced).
+3. Run `memsync apply --scope global "{{OPS_DIR}}/work/draft-global-<today>.md"` and read `apply-global-<today>.md` to confirm `ERROR 0` (the report lists applied diff lines and any cross-tool sync targets when `cross_tool_sync.enabled=true`).
 
-## Final Output Format
+## Final Output Format (present directly to the user)
 ```text
 Memory Sync YYYY-MM-DD: OK | SKIP(0 changes) | FAIL
 - lint: ERROR n / WARN m (work/lint-YYYY-MM-DD.md)
+  (if n>0 or m>0, briefly list each ERROR/WARN or FOREIGN_AGENTS notice)
 - workspaces: <ws>: +a/-b lines (x bytes) | SKIP | SKIP_AGENTS
-- global: +a/-b lines (y bytes) | SKIP
+- global: +a/-b lines (y bytes) | SKIP (plus synced cross-tool target names if any)
+
+## What Changed (required whenever any scope updated; omit on 0-change SKIP)
+- [<ws> AGENTS.md] (sources: <changed entry filenames with NEW/MODIFIED/DELETED>):
+  - 1-3 concise bullets summarizing what was added, updated, or removed (from sync-ws and apply-<ws> diffs)
+- [Global AGENTS.md] (sources: <changed global entries or updated workspaces>):
+  - 1-3 concise bullets summarizing what was added, updated, or removed (from sync-global and apply-global diffs; never include secrets or sync:never internals)
 ```

@@ -29,7 +29,7 @@
    - 固定指针：指向 `<工作区>/GEMINI.md` 与 `{{MEMORY_HOME}}/GEMINI.md`；
    - `## 一、本项目主线进展与现状`（提炼本项目 `project` 状态，删掉已删除项）；
    - `## 二、本项目专属规范与核心坑位`（仅放本项目独有约束，不重复全局条目）。
-3. 运行 `memsync apply --scope <ws> "{{OPS_DIR}}/work/draft-ws-<ws>-<今天>.md"` 并读取 `apply-<ws>` 报告确认 `ERROR 0`。
+3. 运行 `memsync apply --scope <ws> "{{OPS_DIR}}/work/draft-ws-<ws>-<今天>.md"` 并读取 `apply-<ws>-<今天>.md` 确认 `ERROR 0`（报告里含本次 `## diff（仅变化行）`）。
 
 ### 第 4 步 · 阶段 2：同步全局 `AGENTS.md`
 若 `sync-plan` 中 `[global]` 标记 `NEEDS_UPDATE`：
@@ -41,12 +41,19 @@
    - `## 二、各工作区定位与当前动态`（结合阶段 1 最新工作区摘要，每个启用工作区写 1–2 行现状，附全局跨项目要点）；
    - `## 三、通用开发规范与协作红线`（提炼全局 `feedback` 条目）；
    - `## 四、本机常用工具与参考速查`（优先从全局 `memories/local-installed-tools.md` 提炼最常用路径/包管/系统坑速查，若该文件存在则节末必须附指向它的指针；含 `sync: never` 凭据条目只留脱敏指针，禁写明文）。
-3. 运行 `memsync apply --scope global "{{OPS_DIR}}/work/draft-global-<今天>.md"` 并确认 `ERROR 0`（若配置了 `cross_tool_sync.enabled=true`，脚本会自动备份并分发到外部工具路径）。
+3. 运行 `memsync apply --scope global "{{OPS_DIR}}/work/draft-global-<今天>.md"` 并读取 `apply-global-<今天>.md` 确认 `ERROR 0`（报告里含本次 diff；若配置了 `cross_tool_sync.enabled=true`，脚本会自动备份并分发到外部工具路径）。
 
-## 最终汇报格式
+## 最终汇报格式（直接输出给用户查看）
 ```text
 记忆同步 YYYY-MM-DD：OK | SKIP(0变更) | FAIL
 - lint：ERROR n / WARN m（work/lint-YYYY-MM-DD.md）
+  （若 n>0 或 m>0，紧跟简述每条 ERROR/WARN 或 FOREIGN_AGENTS 覆写提醒）
 - 工作区阶段：<ws>: +a/-b 行 (x字节) | SKIP | SKIP_AGENTS
-- 全局阶段：+a/-b 行 (y字节) | SKIP
+- 全局阶段：+a/-b 行 (y字节) | SKIP（若已分发外部工具，列出目标名）
+
+## 本次改动摘要（有实际更新时必填；全 SKIP 可省略本节）
+- [<ws> AGENTS.md]（触发源：<变更的记忆文件名及 NEW/MODIFIED/DELETED>）：
+  - 用 1–3 条白话短句概括本次新增、修订或删改了什么（结合 sync-ws 与 apply-<ws> 的 diff）
+- [全局 AGENTS.md]（触发源：<全局变更条目或阶段1同步工作区>）：
+  - 用 1–3 条白话短句概括本次新增、修订或删改了什么（结合 sync-global 与 apply-global 的 diff，禁输出密钥或 sync:never 敏感原文）
 ```

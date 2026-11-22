@@ -107,7 +107,7 @@ English version: [SKILL.md](./SKILL.md)
 4. 若开启双层模式：生成 `~/.gemini/memory-ops/RUNBOOK.md`；如已有记忆正文，跑一遍 `sync-plan -> global-input -> draft -> apply --scope global` 生成首份全局快照，否则写初始骨架。
 5. 如用户要同时初始化当前打开的工作区 `<cwd>`：运行 `init "<cwd>" --summary "<定位>"`（保留原件则加 `--no-manage-agents`），写入项目记忆并用同样流程生成工作区 `AGENTS.md`。
 6. 若用户开启了定时同步（`schedule_enabled=true`）：
-   - 按 `templates/shared/sidecar-schedule.json` 生成 `~/.gemini/config/sidecars/daily-agents-memory-sync/sidecar.json`（填入真实 `CRON_TZ`、时间、已验证的 `<PYTHON_CMD>` 与工作区 `workspace_uris`）。
+   - 按 `templates/shared/sidecar-schedule.json` 生成 `~/.gemini/config/sidecars/daily-agents-memory-sync/sidecar.json`（填入真实 `CRON_TZ`、时间、已验证的 `<PYTHON_CMD>` 与工作区 `workspace_uris`；每次跑完会直接向用户输出含触发源与改动要点的简要汇报）。
    - **严禁代改 `user_config.json` 静默开启定时任务**。告诉用户到 `[Open Automations Dashboard](sidecar://dashboard)` 手动启用 **Daily Memory Snapshot Sync**，并主动询问是否先试跑一轮配置好权限白名单。
 
 ---

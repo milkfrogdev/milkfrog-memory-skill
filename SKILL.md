@@ -129,7 +129,7 @@ If migrating existing global or workspace `GEMINI.md` / `AGENTS.md`:
    - Write approved migrated workspace memories into `<cwd>/.gemini/memories/<slug>.md` + `<cwd>/GEMINI.md` index.
    - If Dual-Layer and `manage_agents=true` and memories were migrated, run `sync-plan` -> draft -> `apply --scope <ws>` then `global-input` -> draft -> `apply --scope global`.
 7. If `schedule_enabled=true`:
-   - Render `templates/shared/sidecar-schedule.json` to `~/.gemini/config/sidecars/daily-agents-memory-sync/sidecar.json` (set `CRON_TZ`, minute/hour, exact verified `<PYTHON_CMD>`, `workspace_uris`, and `access_grants` per `automation` rules).
+   - Render `templates/shared/sidecar-schedule.json` to `~/.gemini/config/sidecars/daily-agents-memory-sync/sidecar.json` (set `CRON_TZ`, minute/hour, exact verified `<PYTHON_CMD>`, `workspace_uris`, and `access_grants` per `automation` rules; each run finishes with a brief change summary for the user).
    - **Never modify `user_config.json` or enable the automation silently.** Tell the user the exact display name (**Daily Memory Snapshot Sync**), provide `[Open Automations Dashboard](sidecar://dashboard)`, and offer to test-run once interactively so permissions can be verified.
 
 ---

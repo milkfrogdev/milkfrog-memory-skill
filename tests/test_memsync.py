@@ -623,6 +623,19 @@ class TestMilkFrogMemorySkill(unittest.TestCase):
         cfg_after = json.loads((self.ops / "config.json").read_text(encoding="utf-8"))
         self.assertFalse(cfg_after["context_hook"]["enabled"])
 
+    def test_schedule_templates_require_change_summary_report(self) -> None:
+        sidecar = json.loads((TEMPLATES_DIR / "shared" / "sidecar-schedule.json").read_text(encoding="utf-8"))
+        prompt = sidecar["args"][-1]
+        self.assertIn("trigger files", prompt)
+        self.assertIn("summarizing what changed", prompt)
+
+        zh_runbook = (TEMPLATES_DIR / "zh" / "runbook.md").read_text(encoding="utf-8")
+        en_runbook = (TEMPLATES_DIR / "en" / "runbook.md").read_text(encoding="utf-8")
+        self.assertIn("## 本次改动摘要", zh_runbook)
+        self.assertIn("触发源", zh_runbook)
+        self.assertIn("## What Changed", en_runbook)
+        self.assertIn("sources:", en_runbook)
+
 
 if __name__ == "__main__":
     unittest.main()
