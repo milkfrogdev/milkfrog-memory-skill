@@ -9,7 +9,14 @@
 1. 禁止直接编辑 `{{MEMORY_HOME}}/AGENTS.md` 或任何 `<工作区>/AGENTS.md`，唯一写入入口是 `memsync apply`。
 2. 禁止修改任何 `GEMINI.md`、`memories/*.md`、`config.json` 或 `sync-state.json`。
 3. 临时草稿只允许写到 `{{OPS_DIR}}/work/` 目录内。
-4. 严禁将密钥、密码、token 或标有 `sync: never` 的敏感细节写入 `AGENTS.md`。
+4. 严禁将密钥、密码、token 或标有 `sync: never` 的敏感细节写入 `AGENTS.md`（也不得绕过脚本直读 `sync: never` 记忆原件）。
+
+## 蒸馏核真红线（防脑补）
+1. **有疑必查原文，禁凭窄 diff 猜因果**：凡 diff 语义不清、单行长列表改写、涉及 `[DELETED]` 删除条目、或需要确认某工作区完整快照时，**必须先运行只读命令查证**（自动覆盖全部工作区并强制脱敏 `sync: never`），再读取生成的报告文件核实后落笔：
+   - `memsync show <scope> <file> [--version current|before|both]`（支持记忆文件名及 `AGENTS.md` / `GEMINI.md`）
+   - `memsync search <关键词> [--scope all|<id>]`（跨作用域检索当前与已删除前正文）
+2. **严禁把并列增删脑补成替代关系**：同一行或同一次同步里「移除 A、新增 B」（即使总数恰巧不变），**除非记忆正文明确写明「B 替代/取代 A」**，否则在 `AGENTS.md` 快照和最终「本次改动摘要」里一律客观拆开写「移除 A、新增 B」，**禁用「替代 / 接替 / 升级为」**等强因果臆测词。
+3. **汇报摘要与快照同标准核真**：最终输出的「本次改动摘要」只概括有明确证据支撑的变动，不得为追求文句衔接做二次发挥。
 
 ## 执行步骤
 
@@ -33,7 +40,7 @@
 
 ### 第 4 步 · 阶段 2：同步全局 `AGENTS.md`
 若 `sync-plan` 中 `[global]` 标记 `NEEDS_UPDATE`：
-1. 运行 `memsync global-input`，读取 `work/sync-global-<今天>.md`。
+1. 运行 `memsync global-input`，读取 `work/sync-global-<今天>.md`（未变更工作区标记为 `[UNCHANGED]` 直接沿用原摘要，已变更工作区默认展示增量 diff；如需复核某工作区完整快照，调用 `memsync show <ws> AGENTS.md`）。
 2. 输出完整新草稿到 `{{OPS_DIR}}/work/draft-global-<今天>.md`，遵循固定结构：
    - 头部自述：声明由记忆同步任务自动生成、禁止手改、同步日期；
    - 固定指针：指向 `{{MEMORY_HOME}}/GEMINI.md` 与 `{{MEMORY_HOME}}/memories/`；

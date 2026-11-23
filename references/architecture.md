@@ -40,9 +40,10 @@ If hot entries are distilled into `AGENTS.md` and auto-injected into every new c
 ### Why Two-Stage Incremental Diffs (`sync-state.json`)?
 Re-summarizing all memories daily introduces paraphrase drift and silent omissions. Instead, `memsync.py sync-plan`:
 1. Computes SHA256 hashes for every `memories/*.md` and target `AGENTS.md`.
-2. Emits `[NEW]` (full body), `[MODIFIED]` (`difflib.unified_diff`), and `[DELETED]` (old description) blocks.
+2. Emits `[NEW]` (metadata + full body), `[MODIFIED]` (`n=4` unified diff with Markdown section headers, inline long-line token delta hints warning that co-occurring deletes/adds do not imply replacement, plus inlined full body for small `<= 4 KB` files), and `[DELETED]` (previous metadata + inspect hint) blocks.
 3. Skips any scope with zero changes (`SKIP`) without touching timestamps or files.
-4. Processes **workspaces first (Stage 1)**, then runs `global-input` to roll freshly updated workspace summaries up into **global `AGENTS.md` (Stage 2)**.
+4. Processes **workspaces first (Stage 1)**, then runs `global-input` to roll only changed workspace deltas (collapsing `[UNCHANGED]` workspaces) up into **global `AGENTS.md` (Stage 2)** so bundles stay compact under read truncation limits.
+5. Provides safe read-only `memsync.py show` and `memsync.py search` subcommands so scheduled runs can verify full current/pre-sync memory bodies across any registered workspace with zero extra folder permissions while strictly redacting `sync: never` entries.
 
 ### Why Antigravity Standard vs Extended Budgets?
 Unmodified Antigravity IDE caps each loaded rule file (`GEMINI.md` / `AGENTS.md`) at `24,000` bytes (truncating lines beyond the cap) and budgets `20,000` tokens across always-on rules.

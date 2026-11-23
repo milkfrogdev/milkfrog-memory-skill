@@ -64,9 +64,11 @@ Subcommands:
 - `hook status`: Reports `context_hook` config flags and plugin install status.
 - `hook uninstall`: Backs up `hooks.json`, removes `milkfrog-context-hook`, and sets `context_hook.enabled = false`.
 - `lint`: Audits all enabled scopes, links, frontmatter, secrets, budgets, `.gitignore`, and unregistered folders; writes `work/lint-YYYY-MM-DD.md`.
-- `sync-plan`: Detects SHA256 diffs across enabled workspaces and global memories; writes `work/sync-plan-YYYY-MM-DD.md` and per-workspace `sync-ws-<id>-YYYY-MM-DD.md`.
-- `global-input`: Packages Stage-1 workspace snapshots + global diffs into `work/sync-global-YYYY-MM-DD.md`.
-- `apply --scope <global|ws> <draft.md> [--dry-run] [--no-copy]`: Validates draft, backs up old `AGENTS.md`, writes new `AGENTS.md`, updates `sync-state.json`, and mirrors to external targets if enabled.
+- `sync-plan`: Detects SHA256 diffs across enabled workspaces and global memories; writes `work/sync-plan-YYYY-MM-DD.md` and per-workspace `sync-ws-<id>-YYYY-MM-DD.md` (with `n=4` contextual diffs, section headings, inline long-line change hints, and inlined full body for small `<= 4 KB` modified entries).
+- `global-input`: Packages Stage-1 workspace deltas (collapsing `[UNCHANGED]` workspaces and diffing updated ones) + global diffs into `work/sync-global-YYYY-MM-DD.md`.
+- `apply --scope <global|ws> <draft.md> [--dry-run] [--no-copy]`: Validates draft (secrets, pointers, size budgets, sync date freshness, `[DELETED]` residue, and `>30%` unexpected shrinkage warnings), backs up old `AGENTS.md`, writes new `AGENTS.md`, updates `sync-state.json`, prunes expired `work/` reports (`>14` days), and mirrors to external targets if enabled.
+- `show <scope> <target> [--version current|before|both] [--stdout]`: Safe read-only inspector for any registered scope's memory entry (current disk file and/or cached pre-sync version in `sync-state.json`), `AGENTS.md`, or `GEMINI.md`; strictly redacts `sync: never` bodies and works across all workspaces without extra sidecar folder permissions.
+- `search <query> [--scope all|<id>] [--max-matches N] [--regex] [--stdout]`: Safe pure-Python read-only search across current and cached pre-delete memory entries; matches `sync: never` entries on safe metadata only.
 - `init <path> [--summary "..."] [--name <slug>] [--disabled] [--allow-nested] [--force-agents] [--no-manage-agents]`: Initializes a workspace directory and registers it.
 - `ws list | add | ignore | unignore | enable | disable | manage-agents`: Manages workspace registry and per-workspace `manage_agents` flags.
 - `copy-global [--targets a,b] [--dry-run]`: Manually mirrors global `AGENTS.md` to configured `cross_tool_sync.targets`.

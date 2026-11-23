@@ -9,6 +9,8 @@ Usage:
   python3 memsync.py sync-plan
   python3 memsync.py global-input
   python3 memsync.py apply --scope <id> <draft.md> [--dry-run] [--no-copy]
+  python3 memsync.py show <scope> <target> [--version current|before|both] [--stdout]
+  python3 memsync.py search <query> [--scope all|<id>] [--max-matches N] [--regex] [--stdout]
   python3 memsync.py init <path> [--summary "..."] [--name <slug>] [--no-manage-agents]
   python3 memsync.py ws list | add | ignore | unignore | enable | disable | manage-agents
   python3 memsync.py hook install | status | uninstall
@@ -95,6 +97,12 @@ BUDGET_PROFILES: dict[str, dict[str, Any]] = {
 LINE_WARN = 220
 STALE_PROJECT_DAYS = 60
 BACKUP_KEEP = 14
+DIFF_CONTEXT_LINES = 4
+SMALL_MOD_FULLTEXT_BYTES = 4_096
+INLINE_DIFF_MIN_LINE_CHARS = 120
+SHRINK_WARN_RATIO = 0.70
+SHRINK_WARN_MIN_BYTES = 2_000
+WORK_KEEP_DAYS = 14
 
 REQUIRED_FM = ["name", "description", "type", "scope", "updated"]
 TYPES = {"user", "feedback", "project", "reference"}
@@ -192,6 +200,153 @@ def backup_file(p: Path, tag: str) -> Path | None:
     for old in sorted(BACKUP.glob(f"{tag}-*.md"))[:-BACKUP_KEEP]:
         old.unlink()
     return bk
+
+
+def ensure_utf8_stdio() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
+def fence_block(content: str, lang: str = "") -> str:
+    runs = re.findall(r"`+", content or "")
+    ticks = "`" * max(4, max((len(x) for x in runs), default=0) + 1)
+    body = (content or "").strip()
+    return f"{ticks}{lang}\n{body}\n{ticks}"
+
+
+def prune_work_files(keep_days: int = WORK_KEEP_DAYS) -> int:
+    if not WORK.exists() or keep_days <= 0:
+        return 0
+    cutoff = today_date() - dt.timedelta(days=keep_days)
+    removed = 0
+    for f in WORK.glob("*.md"):
+        m = re.search(r"-(\d{4}-\d{2}-\d{2})\.md$", f.name)
+        if not m:
+            continue
+        fdate = parse_date(m.group(1))
+        if fdate and fdate < cutoff:
+            try:
+                f.unlink()
+                removed += 1
+            except OSError:
+                pass
+    if removed:
+        log("prune-work", f"removed={removed} keep_days={keep_days}")
+    return removed
+
+
+def _nearest_heading(lines: list[str], line_idx: int) -> str:
+    idx = min(max(line_idx, 0), len(lines) - 1) if lines else -1
+    while idx >= 0:
+        ln = lines[idx].strip()
+        if re.match(r"^#{1,4}\s+\S", ln):
+            return ln
+        idx -= 1
+    return ""
+
+
+def build_contextual_diff(
+    old_text: str,
+    new_text: str,
+    label: str,
+    context: int = DIFF_CONTEXT_LINES,
+) -> str:
+    old_lines = old_text.splitlines()
+    new_lines = new_text.splitlines()
+    raw = list(difflib.unified_diff(
+        old_lines,
+        new_lines,
+        fromfile=f"before/{label}",
+        tofile=f"after/{label}",
+        lineterm="",
+        n=context,
+    ))
+    enriched: list[str] = []
+    for ln in raw:
+        m = re.match(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@$", ln)
+        if m:
+            new_ln = max(int(m.group(2)) - 1, 0)
+            old_ln = max(int(m.group(1)) - 1, 0)
+            heading = _nearest_heading(new_lines, new_ln) or _nearest_heading(old_lines, old_ln)
+            if heading:
+                enriched.append(f"{ln} [section: {heading}]")
+                continue
+        enriched.append(ln)
+    return "\n".join(enriched)
+
+
+_INLINE_TOK_RE = re.compile(
+    r"`[^`]+`|[A-Za-z0-9_./:@+-]+|[\u4e00-\u9fff]+|[^\s`A-Za-z0-9_\u4e00-\u9fff]+|`|\s+"
+)
+_INLINE_TRIM_CHARS = " \t、，,;；：:。！？（）()【】[]「」『』《》<>|｜/\\-—"
+
+
+def _clean_inline_piece(piece: str) -> str:
+    s = piece.strip(_INLINE_TRIM_CHARS)
+    if not s:
+        return ""
+    if len(s) > 80:
+        s = s[:77] + "..."
+    return s
+
+
+def extract_inline_deltas(
+    old_text: str,
+    new_text: str,
+    min_chars: int = INLINE_DIFF_MIN_LINE_CHARS,
+) -> list[str]:
+    old_lines = old_text.splitlines()
+    new_lines = new_text.splitlines()
+    sm = difflib.SequenceMatcher(None, old_lines, new_lines)
+    notes: list[str] = []
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag != "replace" or (i2 - i1) != (j2 - j1):
+            continue
+        for off in range(i2 - i1):
+            oln, nln = old_lines[i1 + off], new_lines[j1 + off]
+            if max(len(oln), len(nln)) < min_chars:
+                continue
+            otoks = _INLINE_TOK_RE.findall(oln)
+            ntoks = _INLINE_TOK_RE.findall(nln)
+            tsm = difflib.SequenceMatcher(None, otoks, ntoks, autojunk=False)
+            if tsm.ratio() < 0.45:
+                continue
+            rems: list[str] = []
+            adds: list[str] = []
+            for ttag, a1, a2, b1, b2 in tsm.get_opcodes():
+                if ttag in ("delete", "replace"):
+                    p = _clean_inline_piece("".join(otoks[a1:a2]))
+                    if p and p not in rems:
+                        rems.append(p)
+                if ttag in ("insert", "replace"):
+                    p = _clean_inline_piece("".join(ntoks[b1:b2]))
+                    if p and p not in adds:
+                        adds.append(p)
+            common = set(rems) & set(adds)
+            if common:
+                rems = [x for x in rems if x not in common]
+                adds = [x for x in adds if x not in common]
+            if not rems and not adds:
+                continue
+            lineno = j1 + off + 1
+            rem_s = " / ".join(rems[:4]) + (" ..." if len(rems) > 4 else "")
+            add_s = " / ".join(adds[:4]) + (" ..." if len(adds) > 4 else "")
+            if rems and adds:
+                notes.append(
+                    f"- L{lineno} inline delta (co-occurring delete+add does NOT imply replacement): "
+                    f"removed [{rem_s}] | added [{add_s}]"
+                )
+            elif rems:
+                notes.append(f"- L{lineno} inline removed: [{rem_s}]")
+            else:
+                notes.append(f"- L{lineno} inline added: [{add_s}]")
+            if len(notes) >= 8:
+                return notes
+    return notes
 
 
 def log(cmd: str, msg: str) -> None:
@@ -856,16 +1011,17 @@ def scan_memories_diff(sc: dict[str, Any], prev_scope_state: dict[str, Any]) -> 
             new_items.append((fname, rec, "[sync:never redacted - summary/pointer only]" if redacted else text))
         elif sha != prev_mems[fname].get("sha256"):
             old_txt = prev_mems[fname].get("text", "")
+            inline_deltas: list[str] = []
+            cur_body = "" if redacted else text
             if redacted or prev_mems[fname].get("redacted"):
                 diff_txt = f"[sync:never pointer updated, updated={rec['updated']}, desc={rec['description']}]"
+                cur_body = ""
             elif old_txt:
-                diff_txt = "\n".join(difflib.unified_diff(
-                    old_txt.splitlines(), text.splitlines(),
-                    fromfile=f"before/{fname}", tofile=f"after/{fname}", lineterm="", n=2
-                ))
+                diff_txt = build_contextual_diff(old_txt, text, fname)
+                inline_deltas = extract_inline_deltas(old_txt, text)
             else:
                 diff_txt = text
-            mod_items.append((fname, rec, diff_txt))
+            mod_items.append((fname, rec, diff_txt, cur_body, inline_deltas))
 
     for fname, old_rec in sorted(prev_mems.items()):
         if fname not in cur_files:
@@ -892,19 +1048,58 @@ def scan_memories_diff(sc: dict[str, Any], prev_scope_state: dict[str, Any]) -> 
     }
 
 
-def write_diff_block(r: Report, diff_info: dict[str, Any]) -> None:
+def write_diff_block(r: Report, sc: dict[str, Any], diff_info: dict[str, Any]) -> None:
     if diff_info["new"]:
         r.h("New Memories ([NEW])")
-        for fname, _, body in diff_info["new"]:
-            r.raw(f"\n### [NEW] {fname}\n````markdown\n{body.strip()}\n````")
+        for fname, rec, body in diff_info["new"]:
+            fpath = sc["mem_dir"] / fname
+            r.raw(f"\n### [NEW] {fname}")
+            r.raw(f"- Meta: path=`{fpath}` | type={rec.get('type') or '-'} | updated={rec.get('updated') or '-'}")
+            if rec.get("description"):
+                r.raw(f"- Description: {rec['description']}")
+            if rec.get("digest"):
+                r.raw(f"- Digest: {rec['digest']}")
+            r.raw("\n" + fence_block(body, "markdown"))
     if diff_info["mod"]:
         r.h("Modified Memories ([MODIFIED])")
-        for fname, _, dtxt in diff_info["mod"]:
-            r.raw(f"\n### [MODIFIED] {fname}\n````diff\n{dtxt.strip()}\n````")
+        for fname, rec, dtxt, cur_body, inline_deltas in diff_info["mod"]:
+            fpath = sc["mem_dir"] / fname
+            r.raw(f"\n### [MODIFIED] {fname}")
+            r.raw(f"- Meta: path=`{fpath}` | type={rec.get('type') or '-'} | updated={rec.get('updated') or '-'}")
+            if rec.get("description"):
+                r.raw(f"- Description: {rec['description']}")
+            if rec.get("digest"):
+                r.raw(f"- Digest: {rec['digest']}")
+            r.raw(f"- Inspect full text: `memsync show {sc['id']} {fname} --version both`")
+            if inline_deltas:
+                r.raw("\n#### Inline Change Hints\n" + "\n".join(inline_deltas))
+            r.raw("\n" + fence_block(dtxt, "diff"))
+            if (not rec.get("redacted")) and cur_body and dtxt != cur_body:
+                cbytes = nbytes(cur_body)
+                if cbytes <= SMALL_MOD_FULLTEXT_BYTES:
+                    r.raw(
+                        f"\n#### Updated Full Body ({cbytes:,} bytes <= 4 KB; inlined for accuracy)\n"
+                        + fence_block(cur_body, "markdown")
+                    )
+                else:
+                    r.raw(
+                        f"\n> Body is {cbytes:,} bytes. If any diff line is ambiguous, inspect via "
+                        f"`memsync show {sc['id']} {fname} --version current` or `--version both`."
+                    )
     if diff_info["del"]:
         r.h("Deleted Memories ([DELETED] - remove stale claims from AGENTS.md)")
         for fname, old_rec in diff_info["del"]:
-            r.i(f"`{fname}` - previous description: {old_rec.get('description', '')}")
+            r.raw(f"\n### [DELETED] {fname}")
+            r.i(
+                f"Previous meta: type={old_rec.get('type') or '-'} | updated={old_rec.get('updated') or '-'} | "
+                f"description: {old_rec.get('description', '')}"
+            )
+            if old_rec.get("digest"):
+                r.i(f"Previous digest: {old_rec['digest']}")
+            if old_rec.get("redacted") or old_rec.get("sync") == "never":
+                r.i("Entry was sync: never (no cached body)")
+            else:
+                r.i(f"Inspect pre-delete full text: `memsync show {sc['id']} {fname} --version before`")
 
 
 def cmd_sync_plan(_) -> int:
@@ -951,8 +1146,8 @@ def cmd_sync_plan(_) -> int:
             ws_rep.w("FOREIGN_AGENTS: existing AGENTS.md was not generated by memsync; backup kept in backup/ before overwrite.")
         if sc["agents"].exists():
             ws_rep.h("Current Workspace AGENTS.md")
-            ws_rep.raw("\n````markdown\n" + read_text(sc["agents"]).strip() + "\n````")
-        write_diff_block(ws_rep, diff)
+            ws_rep.raw("\n" + fence_block(read_text(sc["agents"]), "markdown"))
+        write_diff_block(ws_rep, sc, diff)
         ws_rep.save(f"sync-ws-{sc['id']}")
         plan.i(
             f"[{sc['id']}] NEEDS_UPDATE (+{len(diff['new'])} ~{len(diff['mod'])} -{len(diff['del'])}"
@@ -992,32 +1187,67 @@ def cmd_global_input(_) -> int:
     scopes = make_scopes(cfg, only_enabled=True)
     gl_scope = scopes[0]
     ws_scopes = [sc for sc in scopes if sc["kind"] == "project"]
-    gl_diff = scan_memories_diff(gl_scope, st.get("scopes", {}).get("global", {}))
+    prev_gl_st = st.get("scopes", {}).get("global", {})
+    prev_gl_ws = prev_gl_st.get("workspace_agents_sha256", {})
+    prev_gl_ws_texts = prev_gl_st.get("workspace_agents_text", {})
+    gl_diff = scan_memories_diff(gl_scope, prev_gl_st)
 
     r = Report("Global AGENTS.md Stage-2 Input Bundle")
-    r.h("Registered Workspaces & Latest Stage-1 Snapshots")
+    r.h("Registered Workspaces & Stage-1 Delta Summary")
+    active_ws_ids: set[str] = set()
     for sc in ws_scopes:
-        if not sc.get("manage_agents", True):
-            r.raw(f"\n### Workspace `{sc['id']}` ({sc['root']}) - summary: {sc['summary']} (manage_agents=false; using GEMINI.md index)")
-            if sc["gemini"].exists():
-                r.raw("````markdown\n" + read_text(sc["gemini"]).strip() + "\n````")
-            else:
-                r.w("workspace GEMINI.md missing")
+        active_ws_ids.add(sc["id"])
+        cur_fp = workspace_global_fingerprint(sc)
+        prev_fp = prev_gl_ws.get(sc["id"], "")
+        unchanged = bool(prev_fp) and (cur_fp == prev_fp)
+        managed = sc.get("manage_agents", True)
+        doc_name = "AGENTS.md" if managed else "GEMINI.md"
+        doc_path = sc["agents"] if managed else sc["gemini"]
+
+        if unchanged:
+            r.raw(f"\n### [UNCHANGED] Workspace `{sc['id']}` ({sc['root']}) - summary: {sc['summary']}")
+            r.i(f"No changes since last global sync; keep existing global summary (inspect full copy via `memsync show {sc['id']} {doc_name}`).")
             continue
-        r.raw(f"\n### Workspace `{sc['id']}` ({sc['root']}) - initial summary: {sc['summary']}")
-        if sc["agents"].exists():
-            r.raw("````markdown\n" + read_text(sc["agents"]).strip() + "\n````")
+
+        tag = "manage_agents=false; using GEMINI.md index" if not managed else "updated in Stage 1"
+        r.raw(f"\n### [UPDATED] Workspace `{sc['id']}` ({sc['root']}) - summary: {sc['summary']} ({tag})")
+        if not doc_path.exists():
+            r.w(f"workspace {doc_name} missing")
+            continue
+
+        cur_txt = read_text(doc_path)
+        prev_txt = prev_gl_ws_texts.get(sc["id"], "")
+        if prev_txt and prev_txt != cur_txt and nbytes(cur_txt) > SMALL_MOD_FULLTEXT_BYTES:
+            inline_deltas = extract_inline_deltas(prev_txt, cur_txt)
+            ws_diff = build_contextual_diff(prev_txt, cur_txt, f"{sc['id']}/{doc_name}")
+            r.i(
+                f"Current {doc_name} is {nbytes(cur_txt):,} bytes; showing delta since last global sync "
+                f"(inspect full snapshot via `memsync show {sc['id']} {doc_name}`)."
+            )
+            if inline_deltas:
+                r.raw("\n#### Inline Change Hints\n" + "\n".join(inline_deltas))
+            r.raw("\n" + fence_block(ws_diff, "diff"))
         else:
-            r.w("workspace AGENTS.md missing")
+            r.raw("\n" + fence_block(cur_txt, "markdown"))
+
+    for removed_id in sorted(set(prev_gl_ws.keys()) - active_ws_ids):
+        r.raw(f"\n### [REMOVED/DISABLED] Workspace `{removed_id}`")
+        r.i("Workspace was disabled or removed; review Section 2 of global AGENTS.md to prune or archive it.")
 
     if gl_scope["agents"].exists():
         r.h("Current Global AGENTS.md")
-        r.raw("\n````markdown\n" + read_text(gl_scope["agents"]).strip() + "\n````")
-    write_diff_block(r, gl_diff)
+        r.raw("\n" + fence_block(read_text(gl_scope["agents"]), "markdown"))
+    write_diff_block(r, gl_scope, gl_diff)
     return r.save("sync-global")
 
 
-def validate_agents_draft(sc: dict[str, Any], text: str, r: Report) -> None:
+def validate_agents_draft(
+    sc: dict[str, Any],
+    text: str,
+    r: Report,
+    old_text: str = "",
+    diff_info: dict[str, Any] | None = None,
+) -> None:
     size = nbytes(text)
     lim = sc["limits"]
     hint = "keep <= 32KB if syncing to Codex" if sc["kind"] == "global" else "consider trimming to stay focused"
@@ -1040,6 +1270,24 @@ def validate_agents_draft(sc: dict[str, Any], text: str, r: Report) -> None:
     if sc["kind"] == "project" and sc["name"] not in text and str(sc["root"]) not in text:
         r.e("workspace AGENTS.md missing workspace name or root path anchor")
 
+    today_str = str(today_date())
+    if today_str not in text:
+        r.w(f"draft does not contain today's date ({today_str}); verify sync timestamp header was refreshed")
+
+    del_items = (diff_info or {}).get("del", [])
+    if del_items:
+        for fname, _ in del_items:
+            stem = Path(fname).stem.lower()
+            if fname.lower() in low or f"[[{stem}]]" in low:
+                r.w(f"deleted memory '{fname}' still appears in draft; verify stale claims were removed")
+
+    old_bytes = nbytes(old_text) if old_text else 0
+    if old_bytes >= SHRINK_WARN_MIN_BYTES and size < int(old_bytes * SHRINK_WARN_RATIO) and not del_items:
+        r.w(
+            f"draft shrank by >30% ({old_bytes:,} -> {size:,} bytes) with 0 deleted memories; "
+            "verify no sections were dropped accidentally"
+        )
+
 
 def cmd_apply(args) -> int:
     cfg = load_config()
@@ -1059,10 +1307,13 @@ def cmd_apply(args) -> int:
         return 2
 
     new_text = read_text(draft_path).replace("\r\n", "\n").strip() + "\n"
-    r = Report(f"AGENTS.md apply · {sc['id']}" + (" (dry-run)" if args.dry_run else ""))
-    validate_agents_draft(sc, new_text, r)
-
     old_text = read_text(sc["agents"]).replace("\r\n", "\n") if sc["agents"].exists() else ""
+    st = load_state()
+    pre_diff = scan_memories_diff(sc, st.get("scopes", {}).get(sc["id"], {}))
+
+    r = Report(f"AGENTS.md apply · {sc['id']}" + (" (dry-run)" if args.dry_run else ""))
+    validate_agents_draft(sc, new_text, r, old_text=old_text, diff_info=pre_diff)
+
     d = list(difflib.ndiff(old_text.splitlines(), new_text.splitlines()))
     add = sum(1 for x in d if x.startswith("+ "))
     rem = sum(1 for x in d if x.startswith("- "))
@@ -1071,7 +1322,7 @@ def cmd_apply(args) -> int:
         return r.save(f"apply-{sc['id']}")
 
     r.h("diff (changed lines)")
-    r.raw("\n````diff\n" + "\n".join(x for x in d if x[:2] in ("+ ", "- ")) + "\n````")
+    r.raw("\n" + fence_block("\n".join(x for x in d if x[:2] in ("+ ", "- ")), "diff"))
 
     if args.dry_run:
         pv = WORK / f"preview-{sc['id']}-{today_date()}.md"
@@ -1085,20 +1336,26 @@ def cmd_apply(args) -> int:
         r.i(f"backed up previous version: {bk}")
     r.i(f"wrote: {sc['agents']}")
 
-    st = load_state()
     st.setdefault("scopes", {})
     diff = scan_memories_diff(sc, st["scopes"].get(sc["id"], {}))
     scope_rec: dict[str, Any] = {
         "path": str(sc["root"]),
         "agents_sha256": sha256_file(sc["agents"]),
+        "agents_text": new_text,
         "memories": diff["snapshot"],
     }
     if sc["id"] == "global":
+        ws_list = [w for w in make_scopes(cfg, only_enabled=True) if w["kind"] == "project"]
         scope_rec["workspace_agents_sha256"] = {
             w["id"]: workspace_global_fingerprint(w)
-            for w in make_scopes(cfg, only_enabled=True)
-            if w["kind"] == "project"
+            for w in ws_list
         }
+        ws_texts: dict[str, str] = {}
+        for w in ws_list:
+            doc = w["agents"] if w.get("manage_agents", True) else w["gemini"]
+            if doc.exists():
+                ws_texts[w["id"]] = read_text(doc)
+        scope_rec["workspace_agents_text"] = ws_texts
     st["scopes"][sc["id"]] = scope_rec
     st["last_sync"] = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     save_state(st)
@@ -1114,11 +1371,244 @@ def cmd_apply(args) -> int:
         r.h("Cross-Tool Sync")
         run_copy_global(cfg, list(cts["targets"].keys()), r, dry_run=False)
 
+    pruned = prune_work_files(WORK_KEEP_DAYS)
+    if pruned:
+        r.i(f"pruned {pruned} expired work report(s) older than {WORK_KEEP_DAYS} days")
+
     write_utf8_nobom(
         STATUS_FILE,
         json.dumps({"last_apply": st["last_sync"], "scope": sc["id"], "bytes": nbytes(new_text), "added": add, "removed": rem}, ensure_ascii=False),
     )
     return r.save(f"apply-{sc['id']}")
+
+
+# -------------------------------------------------------- read-only inspect
+def _safe_slug(s: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", s).strip("_") or "item"
+
+
+def _emit_readonly_report(kind: str, report_text: str, summary_line: str, to_stdout: bool) -> int:
+    if to_stdout:
+        ensure_utf8_stdio()
+        print(report_text)
+        return 0
+    WORK.mkdir(parents=True, exist_ok=True)
+    out = WORK / f"{kind}-{today_date()}.md"
+    write_utf8_nobom(out, report_text)
+    print(f"{summary_line} report={out}")
+    return 0
+
+
+def cmd_show(args) -> int:
+    cfg = load_config()
+    sc = find_scope(cfg, args.scope)
+    if sc is None:
+        print(f"show error: unknown scope '{args.scope}'")
+        return 2
+
+    raw_target = (args.target or "").strip()
+    if not raw_target or any(sep in raw_target for sep in ("/", "\\")) or ".." in raw_target:
+        print(f"show error: invalid target '{raw_target}' (plain filename only)")
+        return 2
+
+    st = load_state()
+    prev_scope = st.get("scopes", {}).get(sc["id"], {})
+    version = args.version
+    low = raw_target.lower()
+    lines = [f"# Read-Only Inspect · {sc['id']} / {raw_target} · {dt.datetime.now():%Y-%m-%d %H:%M}", ""]
+
+    if low in ("agents", "agents.md", "gemini", "gemini.md"):
+        is_agents = low.startswith("agents")
+        doc_name = "AGENTS.md" if is_agents else "GEMINI.md"
+        doc_path = sc["agents"] if is_agents else sc["gemini"]
+        cur_txt = read_text(doc_path) if doc_path.exists() else ""
+        prev_txt = prev_scope.get("agents_text", "") if is_agents else ""
+        if not cur_txt and not prev_txt:
+            print(f"show error: {doc_name} not found in scope '{sc['id']}'")
+            return 2
+        lines.append(f"- Scope: `{sc['id']}` (`{sc['root']}`)")
+        lines.append(f"- File: `{doc_path}`")
+        lines.append(f"- Version: `{version}`")
+        if version in ("before", "both"):
+            lines.append("\n## Previous Synced Version (before)")
+            lines.append(fence_block(prev_txt, "markdown") if prev_txt else "- (no cached snapshot in sync-state.json)")
+        if version in ("current", "both"):
+            lines.append("\n## Current Version (current)")
+            lines.append(fence_block(cur_txt, "markdown") if cur_txt else "- (file does not exist on disk)")
+        if version == "both" and prev_txt and cur_txt and prev_txt != cur_txt:
+            lines.append("\n## Diff")
+            lines.append(fence_block(build_contextual_diff(prev_txt, cur_txt, doc_name), "diff"))
+        return _emit_readonly_report(
+            f"show-{_safe_slug(sc['id'])}-{_safe_slug(Path(doc_name).stem)}",
+            "\n".join(lines),
+            f"show: scope={sc['id']} target={doc_name} version={version} redacted=no",
+            args.stdout,
+        )
+
+    fname = raw_target if raw_target.endswith(".md") else f"{raw_target}.md"
+    fpath = sc["mem_dir"] / fname
+    prev_rec = prev_scope.get("memories", {}).get(fname)
+    cur_exists = fpath.exists()
+    if not cur_exists and prev_rec is None:
+        print(f"show error: memory '{fname}' not found in scope '{sc['id']}' (disk or sync-state)")
+        return 2
+
+    cur_txt = read_text(fpath) if cur_exists else ""
+    cur_fm, _ = parse_fm(cur_txt) if cur_exists else (None, "")
+    cur_fm = cur_fm or {}
+    redacted = (
+        cur_fm.get("sync") == "never"
+        or bool(prev_rec and (prev_rec.get("redacted") or prev_rec.get("sync") == "never"))
+    )
+
+    lines.append(f"- Scope: `{sc['id']}` (`{sc['root']}`)")
+    lines.append(f"- File: `{fpath}` (on_disk={'yes' if cur_exists else 'no'})")
+    lines.append(f"- Version: `{version}` | sync:never redacted: {'yes' if redacted else 'no'}")
+
+    if redacted:
+        lines.append("\n## Redacted Metadata (sync: never body protected)")
+        meta_src = cur_fm if cur_exists else (prev_rec or {})
+        lines.append(f"- type: `{meta_src.get('type', '')}` | updated: `{meta_src.get('updated', '')}`")
+        lines.append(f"- description: {meta_src.get('description', '')}")
+        if meta_src.get("digest"):
+            lines.append(f"- digest: {meta_src.get('digest', '')}")
+        lines.append("- body: `[REDACTED: sync: never]`")
+        return _emit_readonly_report(
+            f"show-{_safe_slug(sc['id'])}-{_safe_slug(Path(fname).stem)}",
+            "\n".join(lines),
+            f"show: scope={sc['id']} target={fname} version={version} redacted=yes",
+            args.stdout,
+        )
+
+    prev_txt = (prev_rec or {}).get("text", "")
+    if version in ("before", "both"):
+        lines.append("\n## Previous Synced Version (before)")
+        lines.append(fence_block(prev_txt, "markdown") if prev_txt else "- (no previous cached body in sync-state.json)")
+    if version in ("current", "both"):
+        lines.append("\n## Current Version (current)")
+        lines.append(
+            fence_block(cur_txt, "markdown")
+            if cur_exists
+            else "- (deleted from disk; inspect pre-delete text with `--version before`)"
+        )
+    if version == "both" and prev_txt and cur_exists:
+        if prev_txt == cur_txt:
+            lines.append("\n## Diff\n- Current and previous synced versions are identical.")
+        else:
+            deltas = extract_inline_deltas(prev_txt, cur_txt)
+            if deltas:
+                lines.append("\n## Inline Change Hints\n" + "\n".join(deltas))
+            lines.append("\n## Diff")
+            lines.append(fence_block(build_contextual_diff(prev_txt, cur_txt, fname), "diff"))
+
+    return _emit_readonly_report(
+        f"show-{_safe_slug(sc['id'])}-{_safe_slug(Path(fname).stem)}",
+        "\n".join(lines),
+        f"show: scope={sc['id']} target={fname} version={version} redacted=no",
+        args.stdout,
+    )
+
+
+def cmd_search(args) -> int:
+    cfg = load_config()
+    query = (args.query or "").strip()
+    if not query:
+        print("search error: empty query")
+        return 2
+
+    try:
+        pat = re.compile(query if args.regex else re.escape(query), re.IGNORECASE)
+    except re.error as exc:
+        print(f"search error: invalid regex: {exc}")
+        return 2
+
+    if args.scope == "all":
+        scopes = make_scopes(cfg, only_enabled=True)
+    else:
+        sc = find_scope(cfg, args.scope)
+        if sc is None:
+            print(f"search error: unknown scope '{args.scope}'")
+            return 2
+        scopes = [sc]
+
+    st = load_state()
+    max_matches = max(1, int(args.max_matches))
+    hits: list[dict[str, Any]] = []
+    truncated = False
+
+    def _scan_text(scope_id: str, fname: str, status: str, text: str) -> None:
+        nonlocal truncated
+        flines = text.splitlines()
+        for idx, ln in enumerate(flines):
+            if pat.search(ln):
+                if len(hits) >= max_matches:
+                    truncated = True
+                    return
+                ctx_lo = max(0, idx - 1)
+                ctx_hi = min(len(flines), idx + 2)
+                snippet = "\n".join(f"L{k + 1}: {flines[k]}" for k in range(ctx_lo, ctx_hi))
+                hits.append({
+                    "scope": scope_id,
+                    "file": fname,
+                    "status": status,
+                    "line": idx + 1,
+                    "heading": _nearest_heading(flines, idx),
+                    "snippet": snippet,
+                })
+
+    for sc in scopes:
+        if truncated:
+            break
+        cur_names: set[str] = set()
+        if sc["mem_dir"].exists():
+            for fpath in sorted(sc["mem_dir"].glob("*.md")):
+                if truncated:
+                    break
+                cur_names.add(fpath.name)
+                txt = read_text(fpath)
+                fm, _ = parse_fm(txt)
+                fm = fm or {}
+                if fm.get("sync") == "never":
+                    safe_meta = "\n".join(
+                        f"{k}: {fm.get(k, '')}" for k in ("name", "description", "digest") if fm.get(k)
+                    )
+                    _scan_text(sc["id"], fpath.name, "CURRENT/sync:never-meta-only", safe_meta)
+                else:
+                    _scan_text(sc["id"], fpath.name, "CURRENT", txt)
+
+        prev_mems = st.get("scopes", {}).get(sc["id"], {}).get("memories", {})
+        for fname, old_rec in sorted(prev_mems.items()):
+            if truncated:
+                break
+            if fname in cur_names:
+                continue
+            if old_rec.get("redacted") or old_rec.get("sync") == "never":
+                safe_meta = f"description: {old_rec.get('description', '')}\ndigest: {old_rec.get('digest', '')}"
+                _scan_text(sc["id"], fname, "DELETED-BEFORE/sync:never-meta-only", safe_meta)
+            elif old_rec.get("text"):
+                _scan_text(sc["id"], fname, "DELETED-BEFORE", old_rec["text"])
+
+    lines = [
+        f"# Read-Only Memory Search · {dt.datetime.now():%Y-%m-%d %H:%M}",
+        "",
+        f"- Query: `{query}` (mode: {'regex' if args.regex else 'literal case-insensitive'})",
+        f"- Scope: `{args.scope}` | hits: {len(hits)}{' (truncated at max-matches)' if truncated else ''}",
+        "- Privacy guard: `sync: never` entries are matched on safe metadata only; bodies are never read.",
+    ]
+    if not hits:
+        lines.append("\n(no matches found)")
+    else:
+        for i, h in enumerate(hits, 1):
+            head_note = f" | section: {h['heading']}" if h["heading"] else ""
+            lines.append(f"\n### {i}. [{h['scope']}] `{h['file']}` ({h['status']} · L{h['line']}{head_note})")
+            lines.append(fence_block(h["snippet"], "text"))
+
+    return _emit_readonly_report(
+        "search",
+        "\n".join(lines),
+        f"search: scope={args.scope} hits={len(hits)} truncated={'yes' if truncated else 'no'}",
+        args.stdout,
+    )
 
 
 # ---------------------------------------------------------- workspaces & init
@@ -1935,6 +2425,19 @@ def build_parser() -> argparse.ArgumentParser:
     ap_apply.add_argument("--dry-run", action="store_true")
     ap_apply.add_argument("--no-copy", action="store_true")
 
+    ap_show = sp.add_parser("show")
+    ap_show.add_argument("scope")
+    ap_show.add_argument("target")
+    ap_show.add_argument("--version", choices=("current", "before", "both"), default="current")
+    ap_show.add_argument("--stdout", action="store_true")
+
+    ap_search = sp.add_parser("search")
+    ap_search.add_argument("query")
+    ap_search.add_argument("--scope", default="all")
+    ap_search.add_argument("--max-matches", type=int, default=20)
+    ap_search.add_argument("--regex", action="store_true")
+    ap_search.add_argument("--stdout", action="store_true")
+
     ap_init = sp.add_parser("init")
     ap_init.add_argument("path")
     ap_init.add_argument("--summary", default="")
@@ -2001,6 +2504,8 @@ def main() -> int:
         "sync-plan": cmd_sync_plan,
         "global-input": cmd_global_input,
         "apply": cmd_apply,
+        "show": cmd_show,
+        "search": cmd_search,
         "init": cmd_init,
         "ws": cmd_ws,
         "hook": cmd_hook,

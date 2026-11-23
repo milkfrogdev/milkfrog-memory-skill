@@ -40,9 +40,10 @@
 ### 为什么用两阶段 Diff（`sync-state.json`）而不是全量重写？
 让模型每天从零重读全部记忆重新总结，很容易出现改写漂移和漏条。`memsync.py sync-plan` 的做法是：
 1. 比对每个作用域当前 `memories/*.md` 和目标 `AGENTS.md` 的 `sha256` 与 `sync-state.json` 基线。
-2. 仅输出 `[NEW]`（新全文）、`[MODIFIED]`（`unified_diff`）与 `[DELETED]`（旧摘要提醒）给模型做局部修订。
+2. 仅输出 `[NEW]`（元信息+新全文）、`[MODIFIED]`（带小节标题的 `n=4` 上下文 diff、长行词段级改动提示且警示同行删增不等价替代、以及 `≤ 4 KB` 小文件内联全文）与 `[DELETED]`（旧元信息+查删前全文提示）给模型做局部修订。
 3. 0 变更的作用域直接输出 `SKIP`，不重写文件、不碰时间戳。
-4. 先跑**阶段 1（各工作区）**，再用 `global-input` 把刚更新好的各工作区快照汇总进**阶段 2（全局 `AGENTS.md`）**。
+4. 先跑**阶段 1（各工作区）**，再用 `global-input` 把阶段 1 的工作区增量汇总进**阶段 2（全局 `AGENTS.md`）**——未变更工作区自动折叠为 `[UNCHANGED]`，已变更工作区默认输出 diff，防止素材包膨胀撞穿单次读取上限。
+5. 提供跨作用域安全只读命令 `memsync.py show` 与 `memsync.py search`，让后台定时任务无需追加工作区目录权限即可按需查证现版/改前全文，同时在脚本层严格脱敏 `sync: never` 正文。
 
 ### 为什么默认用 `standard`（24 KB）预算档位？
 未修改的原版 Antigravity IDE 对每个 `GEMINI.md` / `AGENTS.md` 规则文件设有 `24,000` 字节硬上限（超出部分会在行边界被静默截断），且总常驻规则预算为 `20,000` tokens。

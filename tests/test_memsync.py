@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 import platform
@@ -401,8 +402,9 @@ class TestMilkFrogMemorySkill(unittest.TestCase):
         draft = self.ops / "work" / "gl-draft.md"
 
         # Without local-installed-tools.md, omitting it produces 0 warnings
+        today_str = str(dt.date.today())
         draft.write_text(
-            f"# AGENTS.md\n> Auto-generated snapshot. Do not edit manually. [{gl_gemini}]({gl_gemini})\n\n"
+            f"# AGENTS.md\n> Auto-generated snapshot. Do not edit manually. Last synced: {today_str}. [{gl_gemini}]({gl_gemini})\n\n"
             "## 1. User\n- None\n\n## 2. Workspaces\n- None\n\n## 3. Conventions\n- None\n\n## 4. Tools\n- None\n",
             encoding="utf-8",
         )
@@ -628,13 +630,243 @@ class TestMilkFrogMemorySkill(unittest.TestCase):
         prompt = sidecar["args"][-1]
         self.assertIn("trigger files", prompt)
         self.assertIn("summarizing what changed", prompt)
+        self.assertIn("memsync.py show/search", prompt)
+        self.assertIn("replaced", prompt)
 
         zh_runbook = (TEMPLATES_DIR / "zh" / "runbook.md").read_text(encoding="utf-8")
         en_runbook = (TEMPLATES_DIR / "en" / "runbook.md").read_text(encoding="utf-8")
         self.assertIn("## 本次改动摘要", zh_runbook)
         self.assertIn("触发源", zh_runbook)
+        self.assertIn("memsync show", zh_runbook)
+        self.assertIn("memsync search", zh_runbook)
+        self.assertIn("严禁把并列增删脑补成替代关系", zh_runbook)
         self.assertIn("## What Changed", en_runbook)
         self.assertIn("sources:", en_runbook)
+        self.assertIn("memsync show", en_runbook)
+        self.assertIn("memsync search", en_runbook)
+        self.assertIn("Never invent replacement relationships", en_runbook)
+
+    def test_readonly_show_search_redaction_and_traversal_guard(self) -> None:
+        run_memsync(self.mem_home, "bootstrap", "--lang", "en", "--agents-cache", "on")
+        ws = self.root / "alpha-ws"
+        ws.mkdir()
+        run_memsync(self.mem_home, "init", str(ws), "--summary", "Alpha workspace")
+
+        # Write a normal workspace memory and a sync:never global memory
+        ws_mem = ws / ".gemini" / "memories" / "release-rule.md"
+        policy_pad = "\n".join(f"- Stable checklist item {i}" for i in range(1, 7))
+        ws_mem.write_text(
+            "---\nname: release-rule\ndescription: [2026-11-20 feedback] Release gate\n"
+            "type: feedback\nscope: project\nupdated: 2026-11-20\n---\n\n"
+            f"## Tagging Policy\n{policy_pad}\n- Always run unit tests before tagging alpha-release-v1.\n",
+            encoding="utf-8",
+        )
+        secret_mem = self.mem_home / "memories" / "vault-pointer.md"
+        secret_mem.write_text(
+            "---\nname: vault-pointer\ndescription: [2026-11-20 reference] Vault pointer location\n"
+            "type: reference\nscope: global\nupdated: 2026-11-20\nsync: never\n---\n\n"
+            "Hidden body marker: top-secret-token-xyz987.\n",
+            encoding="utf-8",
+        )
+
+        # Apply once so sync-state caches the before version of release-rule.md
+        today_str = str(dt.date.today())
+        ws_draft = self.ops / "work" / "ws-draft.md"
+        ws_draft.write_text(
+            f"# AGENTS.md (alpha-ws)\n> Auto-generated snapshot. Last synced: {today_str}. GEMINI.md\n\n"
+            "## 1. Active\n- Active.\n\n## 2. Pitfalls\n- Run tests.\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(run_memsync(self.mem_home, "apply", "--scope", "alpha-ws", str(ws_draft)).returncode, 0)
+
+        # Update then delete release-rule.md to test --version both and --version before
+        ws_mem.write_text(
+            "---\nname: release-rule\ndescription: [2026-11-23 feedback] Release gate v2\n"
+            "type: feedback\nscope: project\nupdated: 2026-11-23\n---\n\n"
+            f"## Tagging Policy\n{policy_pad}\n- Always run unit tests before tagging alpha-release-v2.\n",
+            encoding="utf-8",
+        )
+        both_res = run_memsync(self.mem_home, "show", "alpha-ws", "release-rule.md", "--version", "both", "--stdout")
+        self.assertEqual(both_res.returncode, 0, both_res.stderr)
+        self.assertIn("alpha-release-v1", both_res.stdout)
+        self.assertIn("alpha-release-v2", both_res.stdout)
+        self.assertIn("[section: ## Tagging Policy]", both_res.stdout)
+
+        # Path traversal must be rejected
+        bad_show = run_memsync(self.mem_home, "show", "alpha-ws", "../AGENTS.md")
+        self.assertEqual(bad_show.returncode, 2)
+
+        # sync:never entry must be strictly redacted in show AND search
+        sec_show = run_memsync(self.mem_home, "show", "global", "vault-pointer.md", "--stdout")
+        self.assertEqual(sec_show.returncode, 0)
+        self.assertIn("[REDACTED: sync: never]", sec_show.stdout)
+        self.assertNotIn("top-secret-token-xyz987", sec_show.stdout)
+
+        sec_search_body = run_memsync(self.mem_home, "search", "top-secret-token-xyz987", "--stdout")
+        self.assertEqual(sec_search_body.returncode, 0)
+        self.assertIn("(no matches found)", sec_search_body.stdout)
+
+        sec_search_meta = run_memsync(self.mem_home, "search", "Vault pointer location", "--stdout")
+        self.assertEqual(sec_search_meta.returncode, 0)
+        self.assertIn("CURRENT/sync:never-meta-only", sec_search_meta.stdout)
+        self.assertNotIn("top-secret-token-xyz987", sec_search_meta.stdout)
+
+        # Delete release-rule.md -> show --version before & search both still locate cached pre-delete body
+        ws_mem.unlink()
+        del_show = run_memsync(self.mem_home, "show", "alpha-ws", "release-rule", "--version", "before", "--stdout")
+        self.assertEqual(del_show.returncode, 0)
+        self.assertIn("alpha-release-v1", del_show.stdout)
+
+        del_search = run_memsync(self.mem_home, "search", "alpha-release-v1", "--stdout")
+        self.assertEqual(del_search.returncode, 0)
+        self.assertIn("DELETED-BEFORE", del_search.stdout)
+        self.assertIn("## Tagging Policy", del_search.stdout)
+
+        # Default report mode writes ASCII summary + report file inside work/
+        rep_show = run_memsync(self.mem_home, "show", "alpha-ws", "AGENTS.md")
+        self.assertEqual(rep_show.returncode, 0)
+        self.assertIn("show: scope=alpha-ws target=AGENTS.md", rep_show.stdout)
+        self.assertTrue(any((self.ops / "work").glob("show-alpha-ws-AGENTS-*.md")))
+
+    def test_enhanced_diff_inline_hints_and_global_input_slimming(self) -> None:
+        run_memsync(self.mem_home, "bootstrap", "--lang", "en", "--agents-cache", "on")
+        ws_active = self.root / "ws-active"
+        ws_idle = self.root / "ws-idle"
+        ws_active.mkdir()
+        ws_idle.mkdir()
+        run_memsync(self.mem_home, "init", str(ws_active), "--summary", "Active repo")
+        run_memsync(self.mem_home, "init", str(ws_idle), "--summary", "Idle repo")
+
+        # Seed a global memory with a long comma-separated inventory line below a section heading
+        inv_pad = "\n".join(f"- Core runtime tool {i}: installed and verified." for i in range(1, 7))
+        tools_mem = self.mem_home / "memories" / "tool-list.md"
+        tools_mem.write_text(
+            "---\nname: tool-list\ndescription: [2026-11-20 reference] Installed skills list\n"
+            "type: reference\nscope: global\nupdated: 2026-11-20\n---\n\n"
+            f"## Skill Inventory\n{inv_pad}\n"
+            "- **Installed skills directory**: `~/.agents/skills/` (total `12` items: `alpha-kit`, `beta-kit`, "
+            "`gamma-kit`, `delta-kit`, `epsilon-kit`, `zeta-kit`, `old-video-tool`, `omega-kit`, and shared helpers).\n",
+            encoding="utf-8",
+        )
+
+        # Apply initial Stage-1 and Stage-2 snapshots (ws_active > 4 KB so Stage-2 diff slimming triggers)
+        today_str = str(dt.date.today())
+        filler = "\n".join(f"- Stable milestone item {i:03d}: verified baseline detail line." for i in range(85))
+        active_v1 = (
+            f"# AGENTS.md (ws-active)\n> Auto-generated snapshot. Last synced: {today_str}. GEMINI.md\n\n"
+            f"## 1. Active Project Progress\n{filler}\n- Current status: v1 baseline.\n\n"
+            "## 2. Project-Specific Conventions\n- Keep deterministic builds.\n"
+        )
+        idle_v1 = (
+            f"# AGENTS.md (ws-idle)\n> Auto-generated snapshot. Last synced: {today_str}. GEMINI.md\n\n"
+            "## 1. Active Project Progress\n- UNIQUE_IDLE_MARKER_SHOULD_NOT_REPEAT.\n\n"
+            "## 2. Project-Specific Conventions\n- None.\n"
+        )
+        d1 = self.ops / "work" / "d-active1.md"
+        d2 = self.ops / "work" / "d-idle1.md"
+        d3 = self.ops / "work" / "d-gl1.md"
+        d1.write_text(active_v1, encoding="utf-8")
+        d2.write_text(idle_v1, encoding="utf-8")
+        d3.write_text(
+            f"# AGENTS.md\n> Auto-generated snapshot. Last synced: {today_str}. GEMINI.md\n\n"
+            "## 1. User\n- None\n\n## 2. Workspaces\n- ws-active / ws-idle\n\n"
+            "## 3. Conventions\n- None\n\n## 4. Tools\n- See tool-list.md\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(run_memsync(self.mem_home, "apply", "--scope", "ws-active", str(d1)).returncode, 0)
+        self.assertEqual(run_memsync(self.mem_home, "apply", "--scope", "ws-idle", str(d2)).returncode, 0)
+        self.assertEqual(run_memsync(self.mem_home, "apply", "--scope", "global", str(d3)).returncode, 0)
+
+        # Now update ws-active (only 1 line) and edit tool-list.md (remove old-video-tool, add new-audio-tool)
+        active_v2 = active_v1.replace("Current status: v1 baseline.", "Current status: v2 shipped.")
+        d1.write_text(active_v2, encoding="utf-8")
+        self.assertEqual(run_memsync(self.mem_home, "apply", "--scope", "ws-active", str(d1)).returncode, 0)
+
+        tools_mem.write_text(
+            "---\nname: tool-list\ndescription: [2026-11-23 reference] Installed skills list\n"
+            "type: reference\nscope: global\nupdated: 2026-11-23\n---\n\n"
+            f"## Skill Inventory\n{inv_pad}\n"
+            "- **Installed skills directory**: `~/.agents/skills/` (total `12` items: `alpha-kit`, `beta-kit`, "
+            "`gamma-kit`, `delta-kit`, `epsilon-kit`, `new-audio-tool`, `zeta-kit`, `omega-kit`, and shared helpers).\n",
+            encoding="utf-8",
+        )
+
+        gi_res = run_memsync(self.mem_home, "global-input")
+        self.assertEqual(gi_res.returncode, 0, gi_res.stdout)
+        gi_text = list((self.ops / "work").glob("sync-global-*.md"))[0].read_text(encoding="utf-8")
+
+        # Idle workspace must be collapsed without dumping its body
+        self.assertIn("### [UNCHANGED] Workspace `ws-idle`", gi_text)
+        self.assertNotIn("UNIQUE_IDLE_MARKER_SHOULD_NOT_REPEAT", gi_text)
+        # Active large workspace (>4 KB) should emit incremental diff, not full 85 filler lines
+        self.assertIn("### [UPDATED] Workspace `ws-active`", gi_text)
+        self.assertIn("+- Current status: v2 shipped.", gi_text)
+        self.assertNotIn("Stable milestone item 010", gi_text)
+        # Modified global memory should have inline delta hint (without unchanged zeta-kit noise), section heading, and small-file fulltext
+        self.assertIn("co-occurring delete+add does NOT imply replacement", gi_text)
+        self.assertIn("removed [`old-video-tool`] | added [`new-audio-tool`]", gi_text)
+        self.assertIn("[section: ## Skill Inventory]", gi_text)
+        self.assertIn("Updated Full Body", gi_text)
+
+        # Disabling ws-idle surfaces [REMOVED/DISABLED] notice in global-input
+        self.assertEqual(run_memsync(self.mem_home, "ws", "disable", "ws-idle").returncode, 0)
+        self.assertEqual(run_memsync(self.mem_home, "global-input").returncode, 0)
+        gi_text2 = list((self.ops / "work").glob("sync-global-*.md"))[0].read_text(encoding="utf-8")
+        self.assertIn("### [REMOVED/DISABLED] Workspace `ws-idle`", gi_text2)
+
+    def test_apply_guardrail_warnings_and_work_pruning(self) -> None:
+        run_memsync(self.mem_home, "bootstrap", "--lang", "en", "--agents-cache", "on")
+        ws = self.root / "guard-ws"
+        ws.mkdir()
+        run_memsync(self.mem_home, "init", str(ws), "--summary", "Guard repo")
+
+        # Seed a memory and a >= 2 KB initial workspace AGENTS.md
+        mem_del = ws / ".gemini" / "memories" / "obsolete-rule.md"
+        mem_del.write_text(
+            "---\nname: obsolete-rule\ndescription: [2026-11-20 feedback] Old rule\n"
+            "type: feedback\nscope: project\nupdated: 2026-11-20\n---\n\nOld text.\n",
+            encoding="utf-8",
+        )
+        today_str = str(dt.date.today())
+        big_body = "\n".join(f"- Important active decision line number {i:03d} kept in cache." for i in range(45))
+        big_draft = self.ops / "work" / "big-draft.md"
+        big_draft.write_text(
+            f"# AGENTS.md (guard-ws)\n> Auto-generated snapshot. Last synced: {today_str}. GEMINI.md\n\n"
+            f"## 1. Active\n{big_body}\n\n## 2. Pitfalls\n- See obsolete-rule.md\n",
+            encoding="utf-8",
+        )
+        r0 = run_memsync(self.mem_home, "apply", "--scope", "guard-ws", str(big_draft))
+        self.assertEqual(r0.returncode, 0)
+        self.assertIn("warns=0", r0.stdout)
+
+        # Case 1: missing today's date + >30% unexpected shrinkage with 0 deletions -> 2 warnings (still rc=0)
+        tiny_stale = self.ops / "work" / "tiny-stale.md"
+        tiny_stale.write_text(
+            "# AGENTS.md (guard-ws)\n> Auto-generated snapshot. Last synced: 2020-01-01. GEMINI.md\n\n"
+            "## 1. Active\n- Short.\n\n## 2. Pitfalls\n- Short.\n",
+            encoding="utf-8",
+        )
+        r_dry = run_memsync(self.mem_home, "apply", "--scope", "guard-ws", "--dry-run", str(tiny_stale))
+        self.assertEqual(r_dry.returncode, 0)
+        self.assertIn("warns=2", r_dry.stdout)
+        rep_dry = list((self.ops / "work").glob("apply-guard-ws-*.md"))[0].read_text(encoding="utf-8")
+        self.assertIn("does not contain today's date", rep_dry)
+        self.assertIn("shrank by >30%", rep_dry)
+
+        # Case 2: delete obsolete-rule.md but leave filename in draft -> deleted-residue warning + work pruning
+        mem_del.unlink()
+        expired_work = self.ops / "work" / "lint-2020-01-01.md"
+        keep_nondated = self.ops / "work" / "notes-keep.md"
+        expired_work.write_text("old report\n", encoding="utf-8")
+        keep_nondated.write_text("keep me\n", encoding="utf-8")
+
+        r_del = run_memsync(self.mem_home, "apply", "--scope", "guard-ws", str(big_draft))
+        self.assertEqual(r_del.returncode, 0)
+        self.assertIn("warns=1", r_del.stdout)
+        rep_del = list((self.ops / "work").glob("apply-guard-ws-*.md"))[0].read_text(encoding="utf-8")
+        self.assertIn("deleted memory 'obsolete-rule.md' still appears in draft", rep_del)
+        self.assertFalse(expired_work.exists())
+        self.assertTrue(keep_nondated.exists())
 
 
 if __name__ == "__main__":

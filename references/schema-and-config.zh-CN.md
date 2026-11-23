@@ -61,9 +61,11 @@ metadata:
 - `hook status`：查看 Hook 配置与插件安装状态。
 - `hook uninstall`：备份 `hooks.json` 后移除 `milkfrog-context-hook` 并把 `context_hook.enabled` 置 `false`。
 - `lint`：检查各启用作用域结构、链接、frontmatter、疑似明文密钥、字节阈值、`.gitignore` 与未初始化工作区，输出报告到 `work/lint-YYYY-MM-DD.md`。
-- `sync-plan`：做阶段 1（工作区）+ 阶段 2（全局）sha256 diff 检测，跳过无变化作用域，生成 `work/sync-plan-YYYY-MM-DD.md` 和 `sync-ws-<id>-YYYY-MM-DD.md`。
-- `global-input`：把阶段 1 更新后的工作区快照与全局 diff 打包为 `work/sync-global-YYYY-MM-DD.md`。
-- `apply --scope <global|ws> <draft.md> [--dry-run] [--no-copy]`：校验草稿（不含密钥、带指针、未超限）、备份旧版、写入正式 `AGENTS.md`、更新 `sync-state.json`，按需执行跨端分发。
+- `sync-plan`：做阶段 1（工作区）+ 阶段 2（全局）sha256 diff 检测，跳过无变化作用域，生成 `work/sync-plan-YYYY-MM-DD.md` 和 `sync-ws-<id>-YYYY-MM-DD.md`（带 `n=4` 上下文与小节标题、长行词段级改动提示，并对 `≤ 4 KB` 修改文件内联完整正文）。
+- `global-input`：把阶段 1 工作区变动（未变更工作区折叠为 `[UNCHANGED]`，已变更工作区默认给增量 diff）与全局 diff 打包为 `work/sync-global-YYYY-MM-DD.md`。
+- `apply --scope <global|ws> <draft.md> [--dry-run] [--no-copy]`：校验草稿（密钥拦截、指针、字节阈值，以及同步日期未刷新、`[DELETED]` 残留、无删除骤缩 `>30%` 提醒）、备份旧版、写入正式 `AGENTS.md`、更新 `sync-state.json`、自动清理超期（`>14` 天）`work/` 报告，并按需执行跨端分发。
+- `show <scope> <target> [--version current|before|both] [--stdout]`：跨工作区安全只读查阅任意作用域的记忆正文（含从 `sync-state.json` 提取的改前/删前旧版）、`AGENTS.md` 或 `GEMINI.md`；脚本层强制脱敏 `sync: never` 正文，定时任务无需追加工作区目录权限。
+- `search <query> [--scope all|<id>] [--max-matches N] [--regex] [--stdout]`：纯 Python 跨作用域只读检索当前与已删除前记忆正文；对 `sync: never` 条目仅检安全元信息，绝不读取正文。
 - `init <path> [--summary "..."] [--name <slug>] [--disabled] [--allow-nested] [--force-agents] [--no-manage-agents]`：幂等初始化工作区。
 - `ws list | add | ignore | unignore | enable | disable | manage-agents`：查看或维护工作区注册表与单仓开关。
 - `copy-global [--targets a,b] [--dry-run]`：手动把全局 `AGENTS.md` 备份并复制到外部工具目录。
