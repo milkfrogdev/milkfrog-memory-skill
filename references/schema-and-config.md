@@ -21,7 +21,7 @@ If an older `~/.gemini/memory-ops/workspaces.json` exists and `config.json` does
 | `context_hook.warn_percent` | `number` | `80` | Context occupancy percentage threshold (`1–99`) that triggers the pre-compaction memory rescue alert. |
 | `context_hook.cooldown_calls` | `int` | `3` | Minimum model calls (`PLANNER_RESPONSE`) between repeated alerts (`1` disables throttling). |
 | `context_hook.critical_percent` | `number` | `92` | Emergency threshold (`1–100`, `0` disables): bypasses cooldown once when first crossed during cooldown. |
-| `workspaces[]` | `array` | `[]` | Each entry: `{name, path, summary, enabled, manage_agents?}`. Setting `manage_agents: false` keeps an existing foreign `AGENTS.md` untouched in that single repo. |
+| `workspaces[]` | `array` | `[]` | Each entry: `{name, path, summary, sync_mode}` where `sync_mode` is `full` (default: local cache + global rollup), `local` (isolated: local cache only, never leaks internals to global), `index` (leave foreign `AGENTS.md` untouched, roll up via index), or `off` (disabled). Legacy `enabled`/`manage_agents`/`sync_to_global` booleans remain backward-compatible. |
 | `ignored[]` | `array` | `[]` | Throwaway paths suppressed from new-workspace discovery: `{path, reason, added}`. |
 
 ## 2. Entry YAML Frontmatter Specification
@@ -64,11 +64,11 @@ Subcommands:
 - `hook status`: Reports `context_hook` config flags and plugin install status.
 - `hook uninstall`: Backs up `hooks.json`, removes `milkfrog-context-hook`, and sets `context_hook.enabled = false`.
 - `lint`: Audits all enabled scopes, links, frontmatter, secrets, budgets, `.gitignore`, and unregistered folders; writes `work/lint-YYYY-MM-DD.md`.
-- `sync-plan`: Detects SHA256 diffs across enabled workspaces and global memories; writes `work/sync-plan-YYYY-MM-DD.md` and per-workspace `sync-ws-<id>-YYYY-MM-DD.md` (with `n=4` contextual diffs, section headings, inline long-line change hints, and inlined full body for small `<= 4 KB` modified entries).
-- `global-input`: Packages Stage-1 workspace deltas (collapsing `[UNCHANGED]` workspaces and diffing updated ones) + global diffs into `work/sync-global-YYYY-MM-DD.md`.
-- `apply --scope <global|ws> <draft.md> [--dry-run] [--no-copy]`: Validates draft (secrets, pointers, size budgets, sync date freshness, `[DELETED]` residue, and `>30%` unexpected shrinkage warnings), backs up old `AGENTS.md`, writes new `AGENTS.md`, updates `sync-state.json`, prunes expired `work/` reports (`>14` days), and mirrors to external targets if enabled.
+- `sync-plan`: Detects SHA256 diffs across enabled workspaces and global memories, reporting `stage2_ws` and `stage2_mem` independently; writes `work/sync-plan-YYYY-MM-DD.md` and per-workspace `sync-ws-<id>-YYYY-MM-DD.md` (`sync_mode=local` workspaces update locally without triggering Stage 2).
+- `global-input [--part all|ws|mem]`: Packages Stage-2 inputs—`--part ws` emits workspace deltas, `[ISOLATED]` locators, and current global Section 2 (`sync-global-ws-*.md`); `--part mem` emits global memory diffs and affected sections (`sync-global-mem-*.md`); default `all` emits the full bundle.
+- `apply --scope <global|ws> [--section 2|1,3,4|ws|mem] [--state-part auto|all|ws|mem] <draft.md> [--dry-run] [--no-copy]`: Supports full-file apply or section-level sync block merge (preserving untouched sections verbatim, refreshing the header sync date, and keeping pending baseline state intact across 2A/2B); validates secrets, pointers, budgets, date freshness, and `[DELETED]` residue, prunes expired `work/` reports (`>14` days), and mirrors externally when enabled.
 - `show <scope> <target> [--version current|before|both] [--stdout]`: Safe read-only inspector for any registered scope's memory entry (current disk file and/or cached pre-sync version in `sync-state.json`), `AGENTS.md`, or `GEMINI.md`; strictly redacts `sync: never` bodies and works across all workspaces without extra sidecar folder permissions.
 - `search <query> [--scope all|<id>] [--max-matches N] [--regex] [--stdout]`: Safe pure-Python read-only search across current and cached pre-delete memory entries; matches `sync: never` entries on safe metadata only.
-- `init <path> [--summary "..."] [--name <slug>] [--disabled] [--allow-nested] [--force-agents] [--no-manage-agents]`: Initializes a workspace directory and registers it.
-- `ws list | add | ignore | unignore | enable | disable | manage-agents`: Manages workspace registry and per-workspace `manage_agents` flags.
+- `init <path> [--sync-mode full|local|index|off] [--summary "..."] [--name <slug>] [--allow-nested] [--force-agents]`: Initializes a workspace directory and registers it (backward-compatible with `--disabled`, `--no-manage-agents`, `--isolated`).
+- `ws list | add | mode <target> <full|local|index|off> | ignore | unignore | enable | disable | manage-agents | sync-global`: Manages workspace registry and per-workspace sync modes.
 - `copy-global [--targets a,b] [--dry-run]`: Manually mirrors global `AGENTS.md` to configured `cross_tool_sync.targets`.

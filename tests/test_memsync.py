@@ -839,7 +839,7 @@ class TestMilkFrogMemorySkill(unittest.TestCase):
         self.assertEqual(r0.returncode, 0)
         self.assertIn("warns=0", r0.stdout)
 
-        # Case 1: missing today's date + >30% unexpected shrinkage with 0 deletions -> 2 warnings (still rc=0)
+        # Case 1: missing today's date warns cleanly; legitimate shrinkage no longer triggers noisy >30% warnings
         tiny_stale = self.ops / "work" / "tiny-stale.md"
         tiny_stale.write_text(
             "# AGENTS.md (guard-ws)\n> Auto-generated snapshot. Last synced: 2020-01-01. GEMINI.md\n\n"
@@ -848,10 +848,10 @@ class TestMilkFrogMemorySkill(unittest.TestCase):
         )
         r_dry = run_memsync(self.mem_home, "apply", "--scope", "guard-ws", "--dry-run", str(tiny_stale))
         self.assertEqual(r_dry.returncode, 0)
-        self.assertIn("warns=2", r_dry.stdout)
+        self.assertIn("warns=1", r_dry.stdout)
         rep_dry = list((self.ops / "work").glob("apply-guard-ws-*.md"))[0].read_text(encoding="utf-8")
         self.assertIn("does not contain today's date", rep_dry)
-        self.assertIn("shrank by >30%", rep_dry)
+        self.assertNotIn("shrank by >30%", rep_dry)
 
         # Case 2: delete obsolete-rule.md but leave filename in draft -> deleted-residue warning + work pruning
         mem_del.unlink()
@@ -867,6 +867,146 @@ class TestMilkFrogMemorySkill(unittest.TestCase):
         self.assertIn("deleted memory 'obsolete-rule.md' still appears in draft", rep_del)
         self.assertFalse(expired_work.exists())
         self.assertTrue(keep_nondated.exists())
+
+    def test_sync_mode_isolated_local_and_legacy_compat(self) -> None:
+        run_memsync(self.mem_home, "bootstrap", "--lang", "zh", "--agents-cache", "on")
+        iso_ws = self.root / "thesis-local"
+        iso_ws.mkdir()
+        init_res = run_memsync(
+            self.mem_home, "init", str(iso_ws), "--sync-mode", "local", "--summary", "Isolated thesis workspace"
+        )
+        self.assertEqual(init_res.returncode, 0, init_res.stdout)
+        self.assertIn("sync_mode=local", init_res.stdout)
+
+        # Initial sync establishes global baseline with [ISOLATED] locator
+        today_str = str(dt.date.today())
+        gl_draft = self.ops / "work" / "gl-iso.md"
+        gl_draft.write_text(
+            f"# AGENTS.md\n> 由定时记忆同步自动生成。最近同步：{today_str}。GEMINI.md\n\n"
+            "## 一、偏好\n- 无\n\n"
+            "## 二、各工作区定位与当前动态\n- `thesis-local`：独立隔离工作区。\n\n"
+            "## 三、规范\n- 无\n\n"
+            "## 四、工具\n- 无\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(run_memsync(self.mem_home, "apply", "--scope", "global", str(gl_draft)).returncode, 0)
+
+        # Adding local memory inside isolated workspace updates Stage 1 only, NEVER triggers Stage 2 global
+        iso_mem = iso_ws / ".gemini" / "memories" / "private-note.md"
+        iso_mem.write_text(
+            "---\nname: private-note\ndescription: 【2026-11-28 项目】内部细节\n"
+            "type: project\nscope: project\nupdated: 2026-11-28\n---\n\nPRIVATE_ISOLATED_BODY_MARKER.\n",
+            encoding="utf-8",
+        )
+        (iso_ws / "GEMINI.md").write_text(
+            (iso_ws / "GEMINI.md").read_text(encoding="utf-8")
+            + "- 【2026-11-28 项目·草稿】[内部细节](.gemini/memories/private-note.md) — 仅本地\n",
+            encoding="utf-8",
+        )
+        plan1 = run_memsync(self.mem_home, "sync-plan")
+        self.assertEqual(plan1.returncode, 0, plan1.stdout)
+        self.assertIn("ws_update=thesis-local", plan1.stdout)
+        self.assertIn("global_update=no", plan1.stdout)
+        self.assertIn("stage2_ws=no", plan1.stdout)
+
+        # Apply Stage 1 locally -> global-input --part ws still emits [ISOLATED] with zero body leak
+        ws_draft = self.ops / "work" / "iso-ws-draft.md"
+        ws_draft.write_text(
+            f"# AGENTS.md（thesis-local）\n> 自动生成。最近同步：{today_str}。GEMINI.md\n\n"
+            "## 一、进展\n- PRIVATE_ISOLATED_BODY_MARKER\n\n## 二、规范\n- 无\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(run_memsync(self.mem_home, "apply", "--scope", "thesis-local", str(ws_draft)).returncode, 0)
+        gi_ws = run_memsync(self.mem_home, "global-input", "--part", "ws")
+        self.assertEqual(gi_ws.returncode, 0, gi_ws.stdout)
+        gi_ws_text = list((self.ops / "work").glob("sync-global-ws-*.md"))[0].read_text(encoding="utf-8")
+        self.assertIn("[ISOLATED/UNCHANGED] Workspace `thesis-local`", gi_ws_text)
+        self.assertNotIn("PRIVATE_ISOLATED_BODY_MARKER", gi_ws_text)
+
+        # ws mode toggles cleanly between full / local / index / off
+        self.assertEqual(run_memsync(self.mem_home, "ws", "mode", "thesis-local", "full").returncode, 0)
+        self.assertIn("[sync_mode=full]", run_memsync(self.mem_home, "ws", "list").stdout)
+        self.assertEqual(run_memsync(self.mem_home, "ws", "mode", "thesis-local", "off").returncode, 0)
+        self.assertIn("[sync_mode=off]", run_memsync(self.mem_home, "ws", "list").stdout)
+
+    def test_stage2_section_patch_and_split_state_machine(self) -> None:
+        codex_target = self.root / "ext" / "codex-agents.md"
+        codex_target.parent.mkdir(parents=True)
+        run_memsync(
+            self.mem_home,
+            "bootstrap",
+            "--lang", "en",
+            "--agents-cache", "on",
+            "--target", f"codex={codex_target}",
+        )
+        ws = self.root / "svc-a"
+        ws.mkdir()
+        run_memsync(self.mem_home, "init", str(ws), "--summary", "Service A")
+
+        # Baseline Stage 1 + Stage 2
+        old_date = "2026-11-01"
+        ws_draft = self.ops / "work" / "svc-a.md"
+        ws_draft.write_text(
+            f"# AGENTS.md (svc-a)\n> Auto-generated snapshot. Last synced: {old_date}. GEMINI.md\n\n"
+            "## 1. Active\n- v1\n\n## 2. Pitfalls\n- none\n",
+            encoding="utf-8",
+        )
+        gl_init = self.ops / "work" / "gl-init.md"
+        gl_init.write_text(
+            f"# AGENTS.md (Global)\n> Auto-generated snapshot. Last synced: {old_date}. GEMINI.md\n\n"
+            "## 1. User Profile & Core Preferences\n- KEEP_USER_VERBATIM\n\n"
+            "## 2. Workspaces & Active Projects\n- svc-a: v1\n\n"
+            "## 3. General Engineering Conventions\n- KEEP_RULES_VERBATIM\n\n"
+            "## 4. Environment & Tooling Quick Reference\n- tool v1\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(run_memsync(self.mem_home, "apply", "--scope", "svc-a", str(ws_draft)).returncode, 0)
+        self.assertEqual(run_memsync(self.mem_home, "apply", "--scope", "global", str(gl_init)).returncode, 0)
+
+        # Now change BOTH workspace svc-a AND a global reference memory
+        ws_draft.write_text(ws_draft.read_text(encoding="utf-8").replace("- v1", "- v2 shipped"), encoding="utf-8")
+        self.assertEqual(run_memsync(self.mem_home, "apply", "--scope", "svc-a", str(ws_draft)).returncode, 0)
+        gl_mem = self.mem_home / "memories" / "new-cli.md"
+        gl_mem.write_text(
+            "---\nname: new-cli\ndescription: [2026-11-28 reference] CLI tool v2\n"
+            "type: reference\nscope: global\nupdated: 2026-11-28\n---\n\nInstalled tool v2.\n",
+            encoding="utf-8",
+        )
+        plan = run_memsync(self.mem_home, "sync-plan")
+        self.assertIn("stage2_ws=yes stage2_mem=yes", plan.stdout)
+
+        # Stage 2A: global-input --part ws + apply --section 2 --no-copy
+        self.assertEqual(run_memsync(self.mem_home, "global-input", "--part", "ws").returncode, 0)
+        ws_patch = self.ops / "work" / "gl-sec2.md"
+        ws_patch.write_text("## 2. Workspaces & Active Projects\n- svc-a: v2 shipped\n", encoding="utf-8")
+        r2a = run_memsync(self.mem_home, "apply", "--scope", "global", "--section", "2", "--no-copy", str(ws_patch))
+        self.assertEqual(r2a.returncode, 0, r2a.stdout)
+
+        # After 2A: Section 2 updated, Sections 1/3/4 verbatim, date refreshed, AND stage2_mem STILL pending!
+        mid_gl = (self.mem_home / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertIn(f"Last synced: {dt.date.today()}", mid_gl)
+        self.assertIn("svc-a: v2 shipped", mid_gl)
+        self.assertIn("KEEP_USER_VERBATIM", mid_gl)
+        self.assertIn("KEEP_RULES_VERBATIM", mid_gl)
+        self.assertIn("- tool v1", mid_gl)
+        plan_mid = run_memsync(self.mem_home, "sync-plan")
+        self.assertIn("stage2_ws=no stage2_mem=yes", plan_mid.stdout)
+
+        # Stage 2B: global-input --part mem + apply --section 4 (updates Section 4, preserves Section 2, copies to codex)
+        self.assertEqual(run_memsync(self.mem_home, "global-input", "--part", "mem").returncode, 0)
+        mem_rep = list((self.ops / "work").glob("sync-global-mem-*.md"))[0].read_text(encoding="utf-8")
+        self.assertIn("suggested `--section 4`", mem_rep)
+        mem_patch = self.ops / "work" / "gl-sec4.md"
+        mem_patch.write_text("## 4. Environment & Tooling Quick Reference\n- tool v2\n", encoding="utf-8")
+        r2b = run_memsync(self.mem_home, "apply", "--scope", "global", "--section", "4", str(mem_patch))
+        self.assertEqual(r2b.returncode, 0, r2b.stdout)
+
+        final_gl = (self.mem_home / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertIn("svc-a: v2 shipped", final_gl)
+        self.assertIn("- tool v2", final_gl)
+        self.assertIn("KEEP_USER_VERBATIM", final_gl)
+        self.assertEqual(codex_target.read_text(encoding="utf-8").strip(), final_gl.strip())
+        self.assertIn("global_update=no stage2_ws=no stage2_mem=no", run_memsync(self.mem_home, "sync-plan").stdout)
 
 
 if __name__ == "__main__":

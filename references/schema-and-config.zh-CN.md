@@ -21,7 +21,7 @@
 | `context_hook.warn_percent` | `number` | `80` | 触发记忆抢救提醒的百分比阈值（`1–99`）。 |
 | `context_hook.cooldown_calls` | `int` | `3` | 高水位冷却步数：达到预警线后每 `N` 次模型调用最多提醒 1 次（`1` 表示不节流）。 |
 | `context_hook.critical_percent` | `number` | `92` | 危急破例阈值（`1–100`，`0` 关闭）：冷却期内首次冲过该线立即补提醒 1 次。 |
-| `workspaces[]` | `array` | `[]` | 每项 `{name, path, summary, enabled, manage_agents?}`；单仓库设 `manage_agents: false` 可永久保留他人原版 `AGENTS.md`。 |
+| `workspaces[]` | `array` | `[]` | 每项 `{name, path, summary, sync_mode}`：`full`（默认，本地快照+汇总全局）、`local`（独立隔离，仅更新本地快照不同步细节进全局）、`index`（不接管现有 `AGENTS.md`，仅用索引参与全局汇总）、`off`（停用）；向后兼容旧 `enabled`/`manage_agents`/`sync_to_global` 布尔字段。 |
 | `ignored[]` | `array` | `[]` | 忽略目录列表 `{path, reason, added}`，跳过新工作区初始化提示。 |
 
 ## 2. 记忆条目 YAML Frontmatter 规范
@@ -61,11 +61,11 @@ metadata:
 - `hook status`：查看 Hook 配置与插件安装状态。
 - `hook uninstall`：备份 `hooks.json` 后移除 `milkfrog-context-hook` 并把 `context_hook.enabled` 置 `false`。
 - `lint`：检查各启用作用域结构、链接、frontmatter、疑似明文密钥、字节阈值、`.gitignore` 与未初始化工作区，输出报告到 `work/lint-YYYY-MM-DD.md`。
-- `sync-plan`：做阶段 1（工作区）+ 阶段 2（全局）sha256 diff 检测，跳过无变化作用域，生成 `work/sync-plan-YYYY-MM-DD.md` 和 `sync-ws-<id>-YYYY-MM-DD.md`（带 `n=4` 上下文与小节标题、长行词段级改动提示，并对 `≤ 4 KB` 修改文件内联完整正文）。
-- `global-input`：把阶段 1 工作区变动（未变更工作区折叠为 `[UNCHANGED]`，已变更工作区默认给增量 diff）与全局 diff 打包为 `work/sync-global-YYYY-MM-DD.md`。
-- `apply --scope <global|ws> <draft.md> [--dry-run] [--no-copy]`：校验草稿（密钥拦截、指针、字节阈值，以及同步日期未刷新、`[DELETED]` 残留、无删除骤缩 `>30%` 提醒）、备份旧版、写入正式 `AGENTS.md`、更新 `sync-state.json`、自动清理超期（`>14` 天）`work/` 报告，并按需执行跨端分发。
+- `sync-plan`：做阶段 1（工作区）+ 阶段 2（全局 `stage2_ws`/`stage2_mem`）sha256 diff 检测，跳过无变化作用域，生成 `work/sync-plan-YYYY-MM-DD.md` 和 `sync-ws-<id>-YYYY-MM-DD.md`（带 `n=4` 上下文与小节标题、长行词段级改动提示，并对 `≤ 4 KB` 修改文件内联完整正文；`sync_mode=local` 工作区仅更新本地、不触发阶段 2）。
+- `global-input [--part all|ws|mem]`：支持按步打包——`--part ws` 仅输出工作区增量 diff、`[ISOLATED]` 定位锚点与当前全局 `## 二、` 原文（`sync-global-ws-*.md`）；`--part mem` 仅输出全局记忆 diff 与受影响板块原文（`sync-global-mem-*.md`）；默认 `all` 输出完整汇总包。
+- `apply --scope <global|ws> [--section 2|1,3,4|ws|mem] [--state-part auto|all|ws|mem] <draft.md> [--dry-run] [--no-copy]`：支持整份写入或按同步块精准合并（未选板块原样保留并自动刷新头部日期、分步保留未刷新的基线），校验密钥/指针/字节阈值/日期/`[DELETED]` 残留，备份旧版、更新 `sync-state.json`、清理超期 `work/` 报告并按需跨端分发。
 - `show <scope> <target> [--version current|before|both] [--stdout]`：跨工作区安全只读查阅任意作用域的记忆正文（含从 `sync-state.json` 提取的改前/删前旧版）、`AGENTS.md` 或 `GEMINI.md`；脚本层强制脱敏 `sync: never` 正文，定时任务无需追加工作区目录权限。
 - `search <query> [--scope all|<id>] [--max-matches N] [--regex] [--stdout]`：纯 Python 跨作用域只读检索当前与已删除前记忆正文；对 `sync: never` 条目仅检安全元信息，绝不读取正文。
-- `init <path> [--summary "..."] [--name <slug>] [--disabled] [--allow-nested] [--force-agents] [--no-manage-agents]`：幂等初始化工作区。
-- `ws list | add | ignore | unignore | enable | disable | manage-agents`：查看或维护工作区注册表与单仓开关。
+- `init <path> [--sync-mode full|local|index|off] [--summary "..."] [--name <slug>] [--allow-nested] [--force-agents]`：幂等初始化工作区（兼容旧标志 `--disabled` / `--no-manage-agents` / `--isolated`）。
+- `ws list | add | mode <target> <full|local|index|off> | ignore | unignore | enable | disable | manage-agents | sync-global`：查看或维护工作区注册表与同步模式。
 - `copy-global [--targets a,b] [--dry-run]`：手动把全局 `AGENTS.md` 备份并复制到外部工具目录。

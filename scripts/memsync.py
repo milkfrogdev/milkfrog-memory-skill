@@ -7,12 +7,12 @@ Usage:
   python3 memsync.py config show | set ...
   python3 memsync.py lint
   python3 memsync.py sync-plan
-  python3 memsync.py global-input
-  python3 memsync.py apply --scope <id> <draft.md> [--dry-run] [--no-copy]
+  python3 memsync.py global-input [--part all|ws|mem]
+  python3 memsync.py apply --scope <id> [--section 2|1,3,4] <draft.md> [--dry-run] [--no-copy]
   python3 memsync.py show <scope> <target> [--version current|before|both] [--stdout]
   python3 memsync.py search <query> [--scope all|<id>] [--max-matches N] [--regex] [--stdout]
-  python3 memsync.py init <path> [--summary "..."] [--name <slug>] [--no-manage-agents]
-  python3 memsync.py ws list | add | ignore | unignore | enable | disable | manage-agents
+  python3 memsync.py init <path> [--sync-mode full|local|index|off] [--summary "..."] [--name <slug>]
+  python3 memsync.py ws list | add | mode | ignore | unignore | enable | disable | manage-agents | sync-global
   python3 memsync.py hook install | status | uninstall
   python3 memsync.py copy-global [--targets a,b] [--dry-run]
 """
@@ -100,9 +100,16 @@ BACKUP_KEEP = 14
 DIFF_CONTEXT_LINES = 4
 SMALL_MOD_FULLTEXT_BYTES = 4_096
 INLINE_DIFF_MIN_LINE_CHARS = 120
-SHRINK_WARN_RATIO = 0.70
-SHRINK_WARN_MIN_BYTES = 2_000
 WORK_KEEP_DAYS = 14
+SYNC_MODES = ("full", "local", "index", "off")
+SECTION_ALIASES = {
+    "1": "1", "一": "1", "user": "1",
+    "2": "2", "二": "2", "ws": "2", "workspaces": "2",
+    "3": "3", "三": "3", "rules": "3", "feedback": "3",
+    "4": "4", "四": "4", "tools": "4", "reference": "4",
+}
+SECTION_CN_TO_ID = {"一": "1", "二": "2", "三": "3", "四": "4"}
+SECTION_ID_TO_CN = {"1": "一", "2": "二", "3": "三", "4": "四"}
 
 REQUIRED_FM = ["name", "description", "type", "scope", "updated"]
 TYPES = {"user", "feedback", "project", "reference"}
@@ -605,6 +612,29 @@ def save_state(st: dict[str, Any]) -> None:
     write_utf8_nobom(STATE_FILE, json.dumps(st, ensure_ascii=False, indent=2))
 
 
+def get_sync_mode(ws: dict[str, Any]) -> str:
+    """Resolve workspace sync mode with backward compatibility for legacy boolean flags."""
+    raw = str(ws.get("sync_mode") or "").strip().lower()
+    if raw in SYNC_MODES:
+        return raw
+    if not ws.get("enabled", True):
+        return "off"
+    if not ws.get("manage_agents", True):
+        return "index"
+    if not ws.get("sync_to_global", True):
+        return "local"
+    return "full"
+
+
+def set_sync_mode(ws: dict[str, Any], mode: str) -> None:
+    if mode not in SYNC_MODES:
+        raise ValueError(f"invalid sync_mode: {mode}")
+    ws["sync_mode"] = mode
+    ws.pop("enabled", None)
+    ws.pop("manage_agents", None)
+    ws.pop("sync_to_global", None)
+
+
 def make_scopes(cfg: dict[str, Any], only_enabled: bool = True) -> list[dict[str, Any]]:
     lang = cfg.get("lang", "zh")
     tr = I18N.get(lang, I18N["zh"])
@@ -623,13 +653,17 @@ def make_scopes(cfg: dict[str, Any], only_enabled: bool = True) -> list[dict[str
         "index_headings": GLOBAL_INDEX_HEADINGS,
         "preferred_index_heading": tr["global_index_heading"],
         "summary": tr["global_summary"],
+        "sync_mode": "full",
         "manage_agents": agents_on,
+        "sync_to_global": True,
     }]
     for ws in cfg.get("workspaces", []):
-        if only_enabled and not ws.get("enabled", True):
+        mode = get_sync_mode(ws)
+        if only_enabled and mode == "off":
             continue
         root = Path(ws["path"]).expanduser()
-        ws_manage = agents_on and bool(ws.get("manage_agents", True))
+        raw_manage = mode in ("full", "local")
+        ws_manage = agents_on and raw_manage
         scopes.append({
             "id": ws["name"],
             "kind": "project",
@@ -642,8 +676,10 @@ def make_scopes(cfg: dict[str, Any], only_enabled: bool = True) -> list[dict[str
             "index_headings": PROJECT_INDEX_HEADINGS,
             "preferred_index_heading": tr["project_index_heading"],
             "summary": ws.get("summary", ""),
+            "sync_mode": mode,
             "manage_agents": ws_manage,
-            "raw_manage_agents": bool(ws.get("manage_agents", True)),
+            "raw_manage_agents": raw_manage,
+            "sync_to_global": mode in ("full", "index"),
         })
     return scopes
 
@@ -656,6 +692,8 @@ def find_scope(cfg: dict[str, Any], scope_id: str) -> dict[str, Any] | None:
 
 
 def workspace_global_fingerprint(sc: dict[str, Any]) -> str:
+    if not sc.get("sync_to_global", True):
+        return sha256_bytes(f"isolated:{sc['name']}:{sc['summary']}".encode("utf-8"))
     if sc.get("manage_agents", True):
         return sha256_file(sc["agents"])
     parts = [f"gemini:{sha256_file(sc['gemini'])}"]
@@ -958,7 +996,7 @@ def cmd_lint(_) -> int:
     reg_norms = {norm_path(ws["path"]) for ws in cfg.get("workspaces", [])}
     ign_norms = set(ignored_norms(cfg).keys())
     for ws in cfg.get("workspaces", []):
-        if ws.get("enabled", True) and not Path(ws["path"]).expanduser().is_dir():
+        if get_sync_mode(ws) != "off" and not Path(ws["path"]).expanduser().is_dir():
             r.w(f"enabled workspace directory missing: {ws['name']} ({ws['path']})")
 
     if cfg.get("mode", {}).get("auto_discover_unregistered", True):
@@ -972,7 +1010,7 @@ def cmd_lint(_) -> int:
     if GLOBAL_GEMINI.exists():
         g_txt = read_text(GLOBAL_GEMINI)
         for ws in cfg.get("workspaces", []):
-            if ws.get("enabled", True) and ws["name"] not in g_txt:
+            if get_sync_mode(ws) != "off" and ws["name"] not in g_txt:
                 r.w(f"global GEMINI.md registered workspaces section missing: {ws['name']}")
 
     return r.save("lint")
@@ -1152,33 +1190,161 @@ def cmd_sync_plan(_) -> int:
         plan.i(
             f"[{sc['id']}] NEEDS_UPDATE (+{len(diff['new'])} ~{len(diff['mod'])} -{len(diff['del'])}"
             f"{' / missing-or-drifted' if diff['agents_missing_or_drifted'] else ''}"
-            f"{' / FOREIGN_AGENTS' if foreign_agents else ''}) -> {bundle_path}"
+            f"{' / FOREIGN_AGENTS' if foreign_agents else ''}"
+            f"{' / ISOLATED(local)' if not sc.get('sync_to_global', True) else ''}) -> {bundle_path}"
         )
 
     gl_diff = scan_memories_diff(gl_scope, scopes_state.get("global", {}))
-    ws_agents_changed = bool(ws_to_update) or any(
+    ws_agents_changed = any(
+        sc["id"] in ws_to_update and sc.get("sync_to_global", True)
+        for sc in ws_scopes
+    ) or any(
         workspace_global_fingerprint(sc) != prev_gl_ws.get(sc["id"], "")
         for sc in ws_scopes
         if sc["root"].is_dir()
     ) or set(sc["id"] for sc in ws_scopes) != set(prev_gl_ws.keys())
 
-    global_needs = gl_diff["changed"] or ws_agents_changed
+    stage2_ws = ws_agents_changed
+    stage2_mem = bool(gl_diff["mem_changed"] or gl_diff["agents_missing_or_drifted"])
+    global_needs = stage2_ws or stage2_mem
     plan.h("Stage 2 · Global Rollup Diff")
     if not global_needs:
         plan.i("[global] SKIP (0 changes across global and workspaces)")
     else:
         plan.i(
-            f"[global] NEEDS_UPDATE (global +{len(gl_diff['new'])} ~{len(gl_diff['mod'])} "
-            f"-{len(gl_diff['del'])}; workspace_changed={ws_agents_changed})"
+            f"[global] NEEDS_UPDATE (stage2_ws={'yes' if stage2_ws else 'no'}; "
+            f"stage2_mem={'yes' if stage2_mem else 'no'} "
+            f"[global +{len(gl_diff['new'])} ~{len(gl_diff['mod'])} -{len(gl_diff['del'])}])"
         )
-        plan.i("After completing Stage 1 apply calls, run: memsync.py global-input")
+        if stage2_ws:
+            no_copy = " --no-copy" if stage2_mem else ""
+            plan.i(
+                f"Stage 2A (Workspaces block): after Stage 1 apply calls, run `memsync.py global-input --part ws`, "
+                f"draft Section 2 only, and run `memsync.py apply --scope global --section 2{no_copy} <draft>`"
+            )
+        if stage2_mem:
+            plan.i(
+                "Stage 2B (Global memory blocks): run `memsync.py global-input --part mem`, "
+                "draft only affected sections, and run `memsync.py apply --scope global --section <e.g. 1,3,4> <draft>`"
+            )
 
     rc = plan.save("sync-plan")
-    print(f"ws_update={','.join(ws_to_update) or 'none'} global_update={'yes' if global_needs else 'no'}")
+    print(
+        f"ws_update={','.join(ws_to_update) or 'none'} "
+        f"global_update={'yes' if global_needs else 'no'} "
+        f"stage2_ws={'yes' if stage2_ws else 'no'} "
+        f"stage2_mem={'yes' if stage2_mem else 'no'}"
+    )
     return rc
 
 
-def cmd_global_input(_) -> int:
+def split_agents_blocks(text: str, is_global: bool = True) -> tuple[str, dict[str, str], list[str]]:
+    """Split AGENTS.md into (header, {'1': '## 1. ...' / '## 一、...', ...}, section_order)."""
+    valid_ids = ("1", "2", "3", "4") if is_global else ("1", "2")
+    zh_re = re.compile(r"^##\s+([一二三四])、")
+    en_re = re.compile(r"^##\s+([1-4])\.\s")
+    header_lines: list[str] = []
+    blocks: dict[str, list[str]] = {}
+    order: list[str] = []
+    cur_id: str | None = None
+    in_fence = False
+    fence_char = ""
+    fence_len = 0
+
+    for ln in text.replace("\r\n", "\n").splitlines():
+        s = ln.lstrip()
+        fm = re.match(r"^(`{3,}|~{3,})", s)
+        if fm:
+            run = fm.group(1)
+            if not in_fence:
+                in_fence, fence_char, fence_len = True, run[0], len(run)
+            elif run[0] == fence_char and len(run) >= fence_len:
+                in_fence = False
+        if not in_fence:
+            stripped = ln.strip()
+            zm = zh_re.match(stripped)
+            em = en_re.match(stripped) if not zm else None
+            sid = SECTION_CN_TO_ID[zm.group(1)] if zm else (em.group(1) if em else None)
+            if sid in valid_ids:
+                cur_id = sid
+                if sid not in blocks:
+                    blocks[sid] = []
+                    order.append(sid)
+                blocks[sid].append(ln)
+                continue
+        if cur_id is None:
+            header_lines.append(ln)
+        else:
+            blocks[cur_id].append(ln)
+
+    header = "\n".join(header_lines).strip()
+    out_blocks = {k: "\n".join(v).strip() for k, v in blocks.items()}
+    return header, out_blocks, order
+
+
+def parse_section_spec(spec: str, is_global: bool = True) -> tuple[list[str], list[str]]:
+    valid = {"1", "2", "3", "4"} if is_global else {"1", "2"}
+    ids: list[str] = []
+    errors: list[str] = []
+    for raw in re.split(r"[,，\s]+", (spec or "").strip()):
+        if not raw:
+            continue
+        low = raw.lower()
+        if low == "mem" and is_global:
+            expanded = ["1", "3", "4"]
+        elif low == "all":
+            expanded = ["1", "2", "3", "4"] if is_global else ["1", "2"]
+        elif low in SECTION_ALIASES:
+            expanded = [SECTION_ALIASES[low]]
+        else:
+            errors.append(f"unknown section selector: {raw}")
+            continue
+        for sid in expanded:
+            if sid not in valid:
+                errors.append(f"section '{raw}' is not valid for this scope")
+            elif sid not in ids:
+                ids.append(sid)
+    if not ids and not errors:
+        errors.append("no valid section specified")
+    return ids, errors
+
+
+def refresh_sync_date(header: str) -> str:
+    today_s = str(today_date())
+    updated = header
+    if re.search(r"最近同步：\d{4}-\d{2}-\d{2}", updated):
+        updated = re.sub(r"最近同步：\d{4}-\d{2}-\d{2}", f"最近同步：{today_s}", updated, count=1)
+    if re.search(r"(?i)Last synced:\s*\d{4}-\d{2}-\d{2}", updated):
+        updated = re.sub(r"(?i)Last synced:\s*\d{4}-\d{2}-\d{2}", f"Last synced: {today_s}", updated, count=1)
+    return updated
+
+
+def merge_agents_sections(
+    old_text: str, patch_text: str, target_secs: list[str], is_global: bool = True
+) -> tuple[str, list[str]]:
+    if not old_text.strip():
+        return "", ["existing AGENTS.md is missing or empty; run a full draft apply (without --section) first"]
+    old_head, old_blocks, old_order = split_agents_blocks(old_text, is_global=is_global)
+    _, patch_blocks, _ = split_agents_blocks(patch_text, is_global=is_global)
+    errors: list[str] = []
+    for sid in target_secs:
+        cn = SECTION_ID_TO_CN[sid]
+        if sid not in old_blocks:
+            errors.append(f"existing AGENTS.md missing section {sid} (`## {sid}.` / `## {cn}、`)")
+        if sid not in patch_blocks:
+            errors.append(f"draft missing requested section {sid} (must start with `## {sid}.` or `## {cn}、`)")
+    if errors:
+        return "", errors
+    merged_blocks = dict(old_blocks)
+    for sid in target_secs:
+        merged_blocks[sid] = patch_blocks[sid]
+    new_head = refresh_sync_date(old_head)
+    parts = [new_head] + [merged_blocks[k] for k in old_order]
+    return "\n\n".join(p for p in parts if p).strip() + "\n", []
+
+
+def cmd_global_input(args) -> int:
+    part = getattr(args, "part", "all") or "all"
     cfg = load_config()
     if not cfg.get("mode", {}).get("agents_cache_enabled", True):
         print("global-input skipped: index-only mode is active (agents_cache_enabled=false)")
@@ -1191,52 +1357,108 @@ def cmd_global_input(_) -> int:
     prev_gl_ws = prev_gl_st.get("workspace_agents_sha256", {})
     prev_gl_ws_texts = prev_gl_st.get("workspace_agents_text", {})
     gl_diff = scan_memories_diff(gl_scope, prev_gl_st)
+    cur_gl_text = read_text(gl_scope["agents"]) if gl_scope["agents"].exists() else ""
+    _, cur_blocks, _ = split_agents_blocks(cur_gl_text, is_global=True) if cur_gl_text else ("", {}, [])
 
-    r = Report("Global AGENTS.md Stage-2 Input Bundle")
-    r.h("Registered Workspaces & Stage-1 Delta Summary")
-    active_ws_ids: set[str] = set()
-    for sc in ws_scopes:
-        active_ws_ids.add(sc["id"])
-        cur_fp = workspace_global_fingerprint(sc)
-        prev_fp = prev_gl_ws.get(sc["id"], "")
-        unchanged = bool(prev_fp) and (cur_fp == prev_fp)
-        managed = sc.get("manage_agents", True)
-        doc_name = "AGENTS.md" if managed else "GEMINI.md"
-        doc_path = sc["agents"] if managed else sc["gemini"]
+    title_map = {
+        "all": "Global AGENTS.md Stage-2 Input Bundle",
+        "ws": "Global AGENTS.md Stage-2A Input Bundle (Workspaces Block · Section 2 only)",
+        "mem": "Global AGENTS.md Stage-2B Input Bundle (Global Memory Blocks)",
+    }
+    r = Report(title_map.get(part, title_map["all"]))
 
-        if unchanged:
-            r.raw(f"\n### [UNCHANGED] Workspace `{sc['id']}` ({sc['root']}) - summary: {sc['summary']}")
-            r.i(f"No changes since last global sync; keep existing global summary (inspect full copy via `memsync show {sc['id']} {doc_name}`).")
-            continue
+    if part in ("all", "ws"):
+        r.h("Registered Workspaces & Stage-1 Delta Summary")
+        active_ws_ids: set[str] = set()
+        for sc in ws_scopes:
+            active_ws_ids.add(sc["id"])
+            cur_fp = workspace_global_fingerprint(sc)
+            prev_fp = prev_gl_ws.get(sc["id"], "")
+            unchanged = bool(prev_fp) and (cur_fp == prev_fp)
+            mode = sc.get("sync_mode", "full")
+            if mode == "local":
+                iso_tag = "[ISOLATED/UNCHANGED]" if unchanged else "[ISOLATED]"
+                r.raw(f"\n### {iso_tag} Workspace `{sc['id']}` ({sc['root']}) - summary: {sc['summary']}")
+                r.i("Isolated workspace (sync_mode=local): do NOT roll up internal progress/details into global AGENTS.md; keep only a one-line locator in Section 2.")
+                continue
+            managed = sc.get("manage_agents", True)
+            doc_name = "AGENTS.md" if managed else "GEMINI.md"
+            doc_path = sc["agents"] if managed else sc["gemini"]
 
-        tag = "manage_agents=false; using GEMINI.md index" if not managed else "updated in Stage 1"
-        r.raw(f"\n### [UPDATED] Workspace `{sc['id']}` ({sc['root']}) - summary: {sc['summary']} ({tag})")
-        if not doc_path.exists():
-            r.w(f"workspace {doc_name} missing")
-            continue
+            if unchanged:
+                r.raw(f"\n### [UNCHANGED] Workspace `{sc['id']}` ({sc['root']}) - summary: {sc['summary']}")
+                r.i(f"No changes since last global sync; keep existing global summary (inspect full copy via `memsync show {sc['id']} {doc_name}`).")
+                continue
 
-        cur_txt = read_text(doc_path)
-        prev_txt = prev_gl_ws_texts.get(sc["id"], "")
-        if prev_txt and prev_txt != cur_txt and nbytes(cur_txt) > SMALL_MOD_FULLTEXT_BYTES:
-            inline_deltas = extract_inline_deltas(prev_txt, cur_txt)
-            ws_diff = build_contextual_diff(prev_txt, cur_txt, f"{sc['id']}/{doc_name}")
-            r.i(
-                f"Current {doc_name} is {nbytes(cur_txt):,} bytes; showing delta since last global sync "
-                f"(inspect full snapshot via `memsync show {sc['id']} {doc_name}`)."
-            )
-            if inline_deltas:
-                r.raw("\n#### Inline Change Hints\n" + "\n".join(inline_deltas))
-            r.raw("\n" + fence_block(ws_diff, "diff"))
-        else:
-            r.raw("\n" + fence_block(cur_txt, "markdown"))
+            tag = "sync_mode=index; using GEMINI.md index" if not managed else "updated in Stage 1"
+            r.raw(f"\n### [UPDATED] Workspace `{sc['id']}` ({sc['root']}) - summary: {sc['summary']} ({tag})")
+            if not doc_path.exists():
+                r.w(f"workspace {doc_name} missing")
+                continue
 
-    for removed_id in sorted(set(prev_gl_ws.keys()) - active_ws_ids):
-        r.raw(f"\n### [REMOVED/DISABLED] Workspace `{removed_id}`")
-        r.i("Workspace was disabled or removed; review Section 2 of global AGENTS.md to prune or archive it.")
+            cur_txt = read_text(doc_path)
+            prev_txt = prev_gl_ws_texts.get(sc["id"], "")
+            if prev_txt and prev_txt != cur_txt and nbytes(cur_txt) > SMALL_MOD_FULLTEXT_BYTES:
+                inline_deltas = extract_inline_deltas(prev_txt, cur_txt)
+                ws_diff = build_contextual_diff(prev_txt, cur_txt, f"{sc['id']}/{doc_name}")
+                r.i(
+                    f"Current {doc_name} is {nbytes(cur_txt):,} bytes; showing delta since last global sync "
+                    f"(inspect full snapshot via `memsync show {sc['id']} {doc_name}`)."
+                )
+                if inline_deltas:
+                    r.raw("\n#### Inline Change Hints\n" + "\n".join(inline_deltas))
+                r.raw("\n" + fence_block(ws_diff, "diff"))
+            else:
+                r.raw("\n" + fence_block(cur_txt, "markdown"))
 
-    if gl_scope["agents"].exists():
+        for removed_id in sorted(set(prev_gl_ws.keys()) - active_ws_ids):
+            r.raw(f"\n### [REMOVED/DISABLED] Workspace `{removed_id}`")
+            r.i("Workspace was disabled or removed; review Section 2 of global AGENTS.md to prune or archive it.")
+
+    if part == "ws":
+        if "2" in cur_blocks:
+            r.h("Current Global AGENTS.md Section 2 (draft updated Section 2 only)")
+            r.raw("\n" + fence_block(cur_blocks["2"], "markdown"))
+        elif cur_gl_text:
+            r.h("Current Global AGENTS.md")
+            r.raw("\n" + fence_block(cur_gl_text, "markdown"))
+        return r.save("sync-global-ws")
+
+    if part == "mem":
+        touched_types = set()
+        for _, rec, _ in gl_diff["new"]:
+            touched_types.add(rec.get("type", ""))
+        for _, rec, _, _, _ in gl_diff["mod"]:
+            touched_types.add(rec.get("type", ""))
+        for _, old_rec in gl_diff["del"]:
+            touched_types.add(old_rec.get("type", ""))
+        sec_hint: list[str] = []
+        if "user" in touched_types:
+            sec_hint.append("1")
+        if "project" in touched_types:
+            sec_hint.append("2")
+        if "feedback" in touched_types:
+            sec_hint.append("3")
+        if "reference" in touched_types:
+            sec_hint.append("4")
+        if not sec_hint:
+            sec_hint = ["1", "3", "4"]
+        r.i(f"Changed global memory types: {', '.join(sorted(x for x in touched_types if x)) or 'none/repair'} -> suggested `--section {','.join(sec_hint)}`")
+        if cur_blocks:
+            show_secs = ["1", "3", "4"] + (["2"] if "2" in sec_hint else [])
+            for sid in show_secs:
+                if sid in cur_blocks:
+                    r.h(f"Current Global AGENTS.md Section {sid}")
+                    r.raw("\n" + fence_block(cur_blocks[sid], "markdown"))
+        elif cur_gl_text:
+            r.h("Current Global AGENTS.md")
+            r.raw("\n" + fence_block(cur_gl_text, "markdown"))
+        write_diff_block(r, gl_scope, gl_diff)
+        return r.save("sync-global-mem")
+
+    if cur_gl_text:
         r.h("Current Global AGENTS.md")
-        r.raw("\n" + fence_block(read_text(gl_scope["agents"]), "markdown"))
+        r.raw("\n" + fence_block(cur_gl_text, "markdown"))
     write_diff_block(r, gl_scope, gl_diff)
     return r.save("sync-global")
 
@@ -1247,6 +1469,7 @@ def validate_agents_draft(
     r: Report,
     old_text: str = "",
     diff_info: dict[str, Any] | None = None,
+    check_deleted: bool = True,
 ) -> None:
     size = nbytes(text)
     lim = sc["limits"]
@@ -1274,19 +1497,12 @@ def validate_agents_draft(
     if today_str not in text:
         r.w(f"draft does not contain today's date ({today_str}); verify sync timestamp header was refreshed")
 
-    del_items = (diff_info or {}).get("del", [])
+    del_items = (diff_info or {}).get("del", []) if check_deleted else []
     if del_items:
         for fname, _ in del_items:
             stem = Path(fname).stem.lower()
             if fname.lower() in low or f"[[{stem}]]" in low:
                 r.w(f"deleted memory '{fname}' still appears in draft; verify stale claims were removed")
-
-    old_bytes = nbytes(old_text) if old_text else 0
-    if old_bytes >= SHRINK_WARN_MIN_BYTES and size < int(old_bytes * SHRINK_WARN_RATIO) and not del_items:
-        r.w(
-            f"draft shrank by >30% ({old_bytes:,} -> {size:,} bytes) with 0 deleted memories; "
-            "verify no sections were dropped accidentally"
-        )
 
 
 def cmd_apply(args) -> int:
@@ -1299,20 +1515,65 @@ def cmd_apply(args) -> int:
         print(f"apply error: unknown scope '{args.scope}'")
         return 2
     if sc["kind"] == "project" and not sc.get("manage_agents", True):
-        print(f"apply refused: workspace '{sc['id']}' has manage_agents=false")
+        print(f"apply refused: workspace '{sc['id']}' has sync_mode={sc.get('sync_mode')}")
         return 2
     draft_path = Path(args.draft)
     if not draft_path.exists():
         print(f"apply error: draft not found: {draft_path}")
         return 2
 
-    new_text = read_text(draft_path).replace("\r\n", "\n").strip() + "\n"
+    raw_draft = read_text(draft_path).replace("\r\n", "\n").strip() + "\n"
     old_text = read_text(sc["agents"]).replace("\r\n", "\n") if sc["agents"].exists() else ""
     st = load_state()
-    pre_diff = scan_memories_diff(sc, st.get("scopes", {}).get(sc["id"], {}))
+    prev_scope_st = st.get("scopes", {}).get(sc["id"], {})
+    pre_diff = scan_memories_diff(sc, prev_scope_st)
 
-    r = Report(f"AGENTS.md apply · {sc['id']}" + (" (dry-run)" if args.dry_run else ""))
-    validate_agents_draft(sc, new_text, r, old_text=old_text, diff_info=pre_diff)
+    section_spec = getattr(args, "section", "") or ""
+    state_part = getattr(args, "state_part", "auto") or "auto"
+    is_global = sc["kind"] == "global"
+
+    r = Report(
+        f"AGENTS.md apply · {sc['id']}"
+        + (f" (section={section_spec})" if section_spec else "")
+        + (" (dry-run)" if args.dry_run else "")
+    )
+
+    target_secs: list[str] = []
+    if section_spec:
+        target_secs, sec_errs = parse_section_spec(section_spec, is_global=is_global)
+        for err in sec_errs:
+            r.e(err)
+        if not sec_errs:
+            new_text, merge_errs = merge_agents_sections(old_text, raw_draft, target_secs, is_global=is_global)
+            for err in merge_errs:
+                r.e(err)
+            if not merge_errs:
+                r.i(f"merged section(s) {','.join(target_secs)}; untouched sections preserved verbatim")
+        else:
+            new_text = ""
+    else:
+        new_text = raw_draft
+
+    if r.err:
+        return r.save(f"apply-{sc['id']}")
+
+    update_ws_state = True
+    update_mem_state = True
+    if is_global and target_secs:
+        if state_part == "ws":
+            update_ws_state, update_mem_state = True, False
+        elif state_part == "mem":
+            update_ws_state, update_mem_state = ("2" in target_secs), True
+        elif state_part == "all":
+            update_ws_state, update_mem_state = True, True
+        else:
+            if target_secs == ["2"]:
+                update_ws_state, update_mem_state = True, False
+            else:
+                update_ws_state = "2" in target_secs
+                update_mem_state = True
+
+    validate_agents_draft(sc, new_text, r, old_text=old_text, diff_info=pre_diff, check_deleted=update_mem_state)
 
     d = list(difflib.ndiff(old_text.splitlines(), new_text.splitlines()))
     add = sum(1 for x in d if x.startswith("+ "))
@@ -1337,25 +1598,32 @@ def cmd_apply(args) -> int:
     r.i(f"wrote: {sc['agents']}")
 
     st.setdefault("scopes", {})
-    diff = scan_memories_diff(sc, st["scopes"].get(sc["id"], {}))
+    diff = scan_memories_diff(sc, prev_scope_st)
     scope_rec: dict[str, Any] = {
         "path": str(sc["root"]),
         "agents_sha256": sha256_file(sc["agents"]),
         "agents_text": new_text,
-        "memories": diff["snapshot"],
+        "memories": diff["snapshot"] if update_mem_state else prev_scope_st.get("memories", diff["snapshot"]),
     }
     if sc["id"] == "global":
-        ws_list = [w for w in make_scopes(cfg, only_enabled=True) if w["kind"] == "project"]
-        scope_rec["workspace_agents_sha256"] = {
-            w["id"]: workspace_global_fingerprint(w)
-            for w in ws_list
-        }
-        ws_texts: dict[str, str] = {}
-        for w in ws_list:
-            doc = w["agents"] if w.get("manage_agents", True) else w["gemini"]
-            if doc.exists():
-                ws_texts[w["id"]] = read_text(doc)
-        scope_rec["workspace_agents_text"] = ws_texts
+        if update_ws_state:
+            ws_list = [w for w in make_scopes(cfg, only_enabled=True) if w["kind"] == "project"]
+            scope_rec["workspace_agents_sha256"] = {
+                w["id"]: workspace_global_fingerprint(w)
+                for w in ws_list
+            }
+            ws_texts: dict[str, str] = {}
+            for w in ws_list:
+                if not w.get("sync_to_global", True):
+                    continue
+                doc = w["agents"] if w.get("manage_agents", True) else w["gemini"]
+                if doc.exists():
+                    ws_texts[w["id"]] = read_text(doc)
+            scope_rec["workspace_agents_text"] = ws_texts
+        else:
+            scope_rec["workspace_agents_sha256"] = prev_scope_st.get("workspace_agents_sha256", {})
+            scope_rec["workspace_agents_text"] = prev_scope_st.get("workspace_agents_text", {})
+        r.i(f"global baseline: memories={'updated' if update_mem_state else 'kept'} | workspaces={'updated' if update_ws_state else 'kept'}")
     st["scopes"][sc["id"]] = scope_rec
     st["last_sync"] = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     save_state(st)
@@ -1641,7 +1909,7 @@ def update_global_gemini_workspaces(cfg: dict[str, Any]) -> bool:
     i, j = start_match.start(), end_match.start()
     lines = [matched_ws_heading]
     for ws in cfg.get("workspaces", []):
-        if ws.get("enabled", True):
+        if get_sync_mode(ws) != "off":
             lines.append(f"- `{ws['name']}` (`{ws['path']}`): {ws['summary']}")
     ignored = cfg.get("ignored", [])
     if ignored:
@@ -1818,9 +2086,11 @@ def init_workspace(
     disabled: bool = False,
     force_agents: bool = False,
     no_manage_agents: bool = False,
+    isolated: bool = False,
+    sync_mode: str | None = None,
 ) -> int:
-    if force_agents and no_manage_agents:
-        print("init error: --force-agents and --no-manage-agents are mutually exclusive")
+    if force_agents and (no_manage_agents or sync_mode == "index"):
+        print("init error: --force-agents cannot be combined with index/no-manage-agents mode")
         return 2
     p = Path(path_str).expanduser().resolve()
     if not p.is_dir():
@@ -1842,14 +2112,21 @@ def init_workspace(
 
     ws_name = (name or (existing_ws["name"] if existing_ws else p.name)).strip().lower().replace(" ", "-")
     ws_summary = (summary or "").strip() or (existing_ws["summary"] if existing_ws else infer_ws_summary(p, ws_name, lang=lang))
-    if no_manage_agents:
-        manage_agents = False
+    if sync_mode in SYNC_MODES:
+        resolved_mode = sync_mode
+    elif disabled:
+        resolved_mode = "off"
+    elif no_manage_agents:
+        resolved_mode = "index"
+    elif isolated:
+        resolved_mode = "local"
     elif force_agents:
-        manage_agents = True
+        resolved_mode = "full"
     elif existing_ws is not None:
-        manage_agents = existing_ws.get("manage_agents", True)
+        resolved_mode = get_sync_mode(existing_ws)
     else:
-        manage_agents = True
+        resolved_mode = "full"
+    manage_agents = resolved_mode in ("full", "local")
 
     cfg["ignored"] = [
         item for item in cfg.get("ignored", [])
@@ -1869,7 +2146,7 @@ def init_workspace(
     if not agents_cache_on:
         agents_status = "skipped(index-only mode; existing untouched)" if proj_agents.exists() else "skipped(index-only mode)"
     elif not manage_agents:
-        agents_status = "unmanaged(manage_agents=false; existing AGENTS.md untouched)" if proj_agents.exists() else "unmanaged(manage_agents=false; not created)"
+        agents_status = f"unmanaged(sync_mode={resolved_mode}; existing AGENTS.md untouched)" if proj_agents.exists() else f"unmanaged(sync_mode={resolved_mode}; not created)"
     elif not proj_agents.exists() or not read_text(proj_agents).strip():
         write_utf8_nobom(proj_agents, render_project_agents_init(p, ws_name, ws_summary, cfg))
         agents_status = "created"
@@ -1881,7 +2158,7 @@ def init_workspace(
                 write_utf8_nobom(proj_agents, render_project_agents_init(p, ws_name, ws_summary, cfg))
                 agents_status = "replaced(backed-up)"
             else:
-                agents_status = "preserved-foreign(WARN: non-memsync AGENTS.md kept; migrate then apply or pass --no-manage-agents)"
+                agents_status = "preserved-foreign(WARN: non-memsync AGENTS.md kept; migrate then apply or pass --sync-mode index)"
 
     gi_status = ensure_gitignore_entry(p)
 
@@ -1889,21 +2166,15 @@ def init_workspace(
         existing_ws["name"] = ws_name
         existing_ws["path"] = str(p)
         existing_ws["summary"] = ws_summary
-        existing_ws["enabled"] = not disabled
-        if manage_agents:
-            existing_ws.pop("manage_agents", None)
-        else:
-            existing_ws["manage_agents"] = False
+        set_sync_mode(existing_ws, resolved_mode)
         reg_status = "updated"
     else:
         rec: dict[str, Any] = {
             "name": ws_name,
             "path": str(p),
             "summary": ws_summary,
-            "enabled": not disabled,
         }
-        if not manage_agents:
-            rec["manage_agents"] = False
+        set_sync_mode(rec, resolved_mode)
         cfg.setdefault("workspaces", []).append(rec)
         reg_status = "registered"
 
@@ -1921,8 +2192,8 @@ def init_workspace(
             }
             save_state(st)
 
-    log("init", f"name={ws_name} reg={reg_status} manage_agents={manage_agents} gemini={gemini_status} agents={agents_status} gitignore={gi_status}")
-    print(f"init: name={ws_name} path={p} reg={reg_status} manage_agents={manage_agents} gemini={gemini_status} agents={agents_status} gitignore={gi_status}")
+    log("init", f"name={ws_name} reg={reg_status} sync_mode={resolved_mode} gemini={gemini_status} agents={agents_status} gitignore={gi_status}")
+    print(f"init: name={ws_name} path={p} reg={reg_status} sync_mode={resolved_mode} gemini={gemini_status} agents={agents_status} gitignore={gi_status}")
     return 0
 
 
@@ -2064,6 +2335,8 @@ def cmd_init(args) -> int:
         disabled=args.disabled,
         force_agents=args.force_agents,
         no_manage_agents=args.no_manage_agents,
+        isolated=getattr(args, "isolated", False),
+        sync_mode=getattr(args, "sync_mode", None),
     )
 
 
@@ -2076,10 +2349,8 @@ def cmd_ws(args) -> int:
         print(f"cross_tool_sync.enabled={cts.get('enabled', False)} auto_copy={cts.get('auto_copy_on_global_apply', True)}")
         print("Registered workspaces:")
         for ws in cfg.get("workspaces", []):
-            flags = ["enabled" if ws.get("enabled", True) else "disabled"]
-            if not ws.get("manage_agents", True):
-                flags.append("manage_agents=false")
-            print(f"  - {ws['name']} [{', '.join(flags)}] path={ws['path']} summary={ws['summary']}")
+            mode = get_sync_mode(ws)
+            print(f"  - {ws['name']} [sync_mode={mode}] path={ws['path']} summary={ws['summary']}")
         print("Ignored paths:")
         for item in cfg.get("ignored", []):
             p = item.get("path", item) if isinstance(item, dict) else item
@@ -2099,7 +2370,23 @@ def cmd_ws(args) -> int:
             disabled=args.disabled,
             force_agents=args.force_agents,
             no_manage_agents=args.no_manage_agents,
+            isolated=getattr(args, "isolated", False),
+            sync_mode=getattr(args, "sync_mode", None),
         )
+
+    if args.ws_cmd == "mode":
+        want_low = args.target.lower()
+        want_norm = norm_path(args.target) if Path(args.target).expanduser().exists() else want_low.rstrip("\\/")
+        for ws in cfg.get("workspaces", []):
+            if ws["name"].lower() == want_low or norm_path(ws["path"]) == want_norm:
+                set_sync_mode(ws, args.mode)
+                save_config(cfg)
+                update_global_gemini_workspaces(cfg)
+                log("ws-mode", f"name={ws['name']} sync_mode={args.mode}")
+                print(f"ws mode: {ws['name']} sync_mode={args.mode}")
+                return 0
+        print(f"ws mode error: workspace not found: {args.target}")
+        return 2
 
     if args.ws_cmd == "ignore":
         p = Path(args.path).expanduser().resolve()
@@ -2133,10 +2420,12 @@ def cmd_ws(args) -> int:
         want_norm = norm_path(args.target) if Path(args.target).expanduser().exists() else want_low.rstrip("\\/")
         for ws in cfg.get("workspaces", []):
             if ws["name"].lower() == want_low or norm_path(ws["path"]) == want_norm:
-                ws["enabled"] = args.ws_cmd == "enable"
+                cur = get_sync_mode(ws)
+                nxt = "off" if args.ws_cmd == "disable" else ("full" if cur == "off" else cur)
+                set_sync_mode(ws, nxt)
                 save_config(cfg)
                 update_global_gemini_workspaces(cfg)
-                print(f"ws {args.ws_cmd}d: {ws['name']}")
+                print(f"ws {args.ws_cmd}d: {ws['name']} (sync_mode={nxt})")
                 return 0
         print(f"ws {args.ws_cmd} error: workspace not found: {args.target}")
         return 2
@@ -2146,15 +2435,27 @@ def cmd_ws(args) -> int:
         want_norm = norm_path(args.target) if Path(args.target).expanduser().exists() else want_low.rstrip("\\/")
         for ws in cfg.get("workspaces", []):
             if ws["name"].lower() == want_low or norm_path(ws["path"]) == want_norm:
-                if args.on:
-                    ws.pop("manage_agents", None)
-                else:
-                    ws["manage_agents"] = False
+                nxt = "full" if args.on else "index"
+                set_sync_mode(ws, nxt)
                 save_config(cfg)
-                log("ws-manage-agents", f"name={ws['name']} manage_agents={args.on}")
-                print(f"ws manage-agents: {ws['name']} manage_agents={args.on}")
+                log("ws-manage-agents", f"name={ws['name']} sync_mode={nxt}")
+                print(f"ws manage-agents: {ws['name']} sync_mode={nxt}")
                 return 0
         print(f"ws manage-agents error: workspace not found: {args.target}")
+        return 2
+
+    if args.ws_cmd == "sync-global":
+        want_low = args.target.lower()
+        want_norm = norm_path(args.target) if Path(args.target).expanduser().exists() else want_low.rstrip("\\/")
+        for ws in cfg.get("workspaces", []):
+            if ws["name"].lower() == want_low or norm_path(ws["path"]) == want_norm:
+                nxt = "full" if args.on else "local"
+                set_sync_mode(ws, nxt)
+                save_config(cfg)
+                log("ws-sync-global", f"name={ws['name']} sync_mode={nxt}")
+                print(f"ws sync-global: {ws['name']} sync_mode={nxt}")
+                return 0
+        print(f"ws sync-global error: workspace not found: {args.target}")
         return 2
     return 2
 
@@ -2417,11 +2718,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp.add_parser("lint")
     sp.add_parser("sync-plan")
-    sp.add_parser("global-input")
+    ap_gi = sp.add_parser("global-input")
+    ap_gi.add_argument("--part", choices=("all", "ws", "mem"), default="all")
 
     ap_apply = sp.add_parser("apply")
     ap_apply.add_argument("--scope", required=True)
     ap_apply.add_argument("draft")
+    ap_apply.add_argument("--section", default="")
+    ap_apply.add_argument("--state-part", choices=("auto", "all", "ws", "mem"), default="auto")
     ap_apply.add_argument("--dry-run", action="store_true")
     ap_apply.add_argument("--no-copy", action="store_true")
 
@@ -2442,10 +2746,12 @@ def build_parser() -> argparse.ArgumentParser:
     ap_init.add_argument("path")
     ap_init.add_argument("--summary", default="")
     ap_init.add_argument("--name")
+    ap_init.add_argument("--sync-mode", choices=SYNC_MODES, default=None)
     ap_init.add_argument("--disabled", action="store_true")
     ap_init.add_argument("--allow-nested", action="store_true")
     ap_init.add_argument("--force-agents", action="store_true")
     ap_init.add_argument("--no-manage-agents", action="store_true")
+    ap_init.add_argument("--isolated", action="store_true")
 
     ap_ws = sp.add_parser("ws")
     ws_sp = ap_ws.add_subparsers(dest="ws_cmd", required=True)
@@ -2454,10 +2760,15 @@ def build_parser() -> argparse.ArgumentParser:
     ws_add.add_argument("path")
     ws_add.add_argument("--summary", default="")
     ws_add.add_argument("--name")
+    ws_add.add_argument("--sync-mode", choices=SYNC_MODES, default=None)
     ws_add.add_argument("--disabled", action="store_true")
     ws_add.add_argument("--allow-nested", action="store_true")
     ws_add.add_argument("--force-agents", action="store_true")
     ws_add.add_argument("--no-manage-agents", action="store_true")
+    ws_add.add_argument("--isolated", action="store_true")
+    ws_mode = ws_sp.add_parser("mode")
+    ws_mode.add_argument("target")
+    ws_mode.add_argument("mode", choices=SYNC_MODES)
     ws_ign = ws_sp.add_parser("ignore")
     ws_ign.add_argument("path")
     ws_ign.add_argument("--reason", default="")
@@ -2471,6 +2782,11 @@ def build_parser() -> argparse.ArgumentParser:
     ma_grp = ws_ma.add_mutually_exclusive_group(required=True)
     ma_grp.add_argument("--on", action="store_true")
     ma_grp.add_argument("--off", action="store_true")
+    ws_sg = ws_sp.add_parser("sync-global")
+    ws_sg.add_argument("target")
+    sg_grp = ws_sg.add_mutually_exclusive_group(required=True)
+    sg_grp.add_argument("--on", action="store_true")
+    sg_grp.add_argument("--off", action="store_true")
 
     ap_hk = sp.add_parser("hook")
     hk_sp = ap_hk.add_subparsers(dest="hook_cmd", required=True)
